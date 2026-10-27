@@ -1,0 +1,10 @@
+node_modules/
+/data/*.db
+/data/*.db-shm
+/data/*.db-wal
+/uploads/
+apk-build/unaligned.apk
+apk-build/aligned.apk
+apk-build/signed/
+apk-build/tools/*.jar
+*.idsig

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Akshay Medicose — Get the app</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <style>
+    body { max-width: 520px; margin: 0 auto; padding: 28px 16px 48px; }
+    h1 { letter-spacing: -0.03em; font-size: 28px; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="logo" style="margin-bottom:12px">AM</div>
+  <h1>Akshay Medicose</h1>
+  <p class="muted">Ujjain · scan this code to download UjjainMedStore-v1.0.apk</p>
+  <div class="seg" id="mode" style="margin:14px 0; flex-wrap:wrap">
+    <button type="button" data-mode="github" class="on">GitHub main</button>
+    <button type="button" data-mode="release">GitHub release</button>
+    <button type="button" data-mode="lan">Local Wi-Fi</button>
+    <button type="button" data-mode="custom">Custom URL</button>
+  </div>
+  <label class="field" id="customWrap" style="display:none;margin-bottom:10px">
+    <span>Custom URL</span>
+    <input id="customUrl" type="url" placeholder="https://example.com/UjjainMedStore-v1.0.apk" />
+  </label>
+  <div class="qr-box" id="qrBox"><!--QRSVG--></div>
+  <p id="linkLine" class="muted" style="word-break:break-all;font-size:12px">__APK_URL__</p>
+  <div class="actions">
+    <a class="btn primary" id="downloadBtn" href="__APK_URL__">Download APK file</a>
+    <button type="button" class="btn" id="copyBtn">Copy download link</button>
+  </div>
+  <script src="js/qrcode.js"></script>
+  <script>
+    var RAW = '__GITHUB_APK__';
+    var RELEASE = '__RELEASE_APK__';
+    var LOCAL = '__LOCAL_APK__';
+    var current = '__DEFAULT_QR__';
+    if (current.indexOf('__') === 0) {
+      RAW = 'https://github.com/gnihar/ujjain-medical-store-app/raw/main/UjjainMedStore-v1.0.apk';
+      RELEASE = 'https://github.com/gnihar/ujjain-medical-store-app/releases/latest/download/UjjainMedStore-v1.0.apk';
+      LOCAL = location.origin + '/download/UjjainMedStore-v1.0.apk';
+      var host = location.hostname;
+      var localHost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+      current = localHost ? RAW : LOCAL;
+    }
+    var mode = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || String(current).indexOf('/raw/main/') !== -1) ? 'github' : 'lan';
+    function paint(url) {
+      current = url;
+      document.getElementById('linkLine').textContent = url;
+      document.getElementById('downloadBtn').href = url;
+      var box = document.getElementById('qrBox');
+      try {
+        var qr = qrcode(0, 'M');
+        qr.addData(url);
+        qr.make();
+        box.innerHTML = qr.createSvgTag({ cellSize: 8, margin: 16, scalable: true });
+      } catch (err) {
+        var img = document.createElement('img');
+        img.alt = 'QR code';
+        img.src = '/api/qr.svg?text=' + encodeURIComponent(url);
+        box.innerHTML = '';
+        box.appendChild(img);
+      }
+    }
+    document.getElementById('mode').addEventListener('click', function (event) {
+      var btn = event.target.closest('button');
+      if (!btn) return;
+      mode = btn.getAttribute('data-mode');
+      Array.prototype.forEach.call(document.querySelectorAll('#mode button'), function (b) {
+        b.classList.toggle('on', b === btn);
+      });
+      document.getElementById('customWrap').style.display = mode === 'custom' ? 'block' : 'none';
+      if (mode === 'github') paint(RAW);
+      else if (mode === 'release') paint(RELEASE);
+      else if (mode === 'lan') paint(LOCAL);
+      else paint(document.getElementById('customUrl').value || current);
+    });
+    document.getElementById('customUrl').addEventListener('change', function () {
+      if (mode === 'custom' && this.value) paint(this.value.trim());
+    });
+    document.getElementById('copyBtn').addEventListener('click', function () {
+      var done = function () { document.getElementById('copyBtn').textContent = 'Copied'; };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(current).then(done).catch(done);
+      } else done();
+    });
+    paint(current);
+    fetch('/api/setup-info').then(function (r) { return r.json(); }).then(function (info) {
+      if (!info || !info.ok) return;
+      RAW = info.githubRawApkUrl || info.githubApkUrl || RAW;
+      RELEASE = info.githubReleaseApkUrl || RELEASE;
+      LOCAL = info.localApkUrl || info.apkUrl || LOCAL;
+      if (mode === 'github') paint(RAW);
+      else if (mode === 'release') paint(RELEASE);
+      else if (mode === 'lan') paint(LOCAL);
+    }).catch(function () {});
+  </script>
+</body>
+</html>

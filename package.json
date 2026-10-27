@@ -1,0 +1,17 @@
+{
+  "name": "ujjain-medical-store-app",
+  "version": "2.0.0",
+  "description": "Akshay Medicose v2 — bills, racks, shortbook, counter sale, credit ledger, and monthly refills for Ujjain",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "build:apk": "bash scripts/build-apk.sh",
+    "test": "node scripts/test-e2e.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "multer": "^2.0.2"
+  }
+}

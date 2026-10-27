@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="360" viewBox="0 0 820 360">
+  <rect width="820" height="360" fill="#fffdf7" stroke="#cbd5e1" stroke-width="2" rx="8"/>
+  <rect x="12" y="12" width="796" height="75" fill="#f1f5f9" rx="4"/>
+  <text x="24" y="38" font-family="monospace" font-weight="bold" font-size="18" fill="#0f172a">TAX INVOICE — MAHAKAL PHARMA AGENCY</text>
+  <text x="24" y="58" font-family="monospace" font-size="12" fill="#334155">14, Freeganj Main Road, Ujjain (M.P.) | GSTIN: 23AABCM4821E1Z4</text>
+  <text x="24" y="76" font-family="monospace" font-size="12" fill="#0f766e">Buyer: Akshay Medicose, Ujjain | DL: 20B/UJN/4418</text>
+  <text x="560" y="38" font-family="monospace" font-weight="bold" font-size="14" fill="#b91c1c">INV NO: MPA-26-1842</text>
+  <text x="560" y="58" font-family="monospace" font-size="12" fill="#334155">DATE: 2026-10-18</text>
+  <line x1="16" y1="102" x2="804" y2="102" stroke="#94a3b8" stroke-width="1"/>
+  <text x="20" y="124" font-family="monospace" font-weight="bold" font-size="12" fill="#475569">S.No | Product Description    | Pack     | Batch No   | Expiry   | Qty+Free | PTR       | MRP</text>
+  <line x1="16" y1="136" x2="804" y2="136" stroke="#94a3b8" stroke-width="1"/>
+  <text x="20" y="165" font-family="monospace" font-size="12" fill="#1e293b">1. Augmentin 625 Duo Tab  | 1x10     | Batch: AG624 | Exp: 2026-12-05 | Qty: 14+1 | PTR: Rs.162.50 | MRP: Rs.223.00</text>
+<text x="20" y="195" font-family="monospace" font-size="12" fill="#1e293b">2. Dolo 650 Tablet        | 1x15     | Batch: DL552 | Exp: 2027-01-15 | Qty: 60+5 | PTR: Rs.24.50 | MRP: Rs.33.80</text>
+<text x="20" y="225" font-family="monospace" font-size="12" fill="#1e293b">3. Mixtard 30/70 Vial     | 1 Vial   | Batch: MX204 | Exp: 2026-12-10 | Qty: 6+0 | PTR: Rs.342.00 | MRP: Rs.455.00</text>
+  <line x1="16" y1="285" x2="804" y2="285" stroke="#94a3b8" stroke-width="1"/>
+  <text x="24" y="315" font-family="monospace" font-size="12" fill="#475569">Terms: Goods returnable up to 60 days prior to expiry for credit note adjustment.</text>
+  <text x="580" y="335" font-family="monospace" font-weight="bold" font-size="13" fill="#0f172a">Authorized Signatory</text>
+</svg>

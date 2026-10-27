@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Install Akshay Medicose</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <style>
+    body { max-width: 640px; margin: 0 auto; padding: 28px 16px 48px; }
+    h1 { letter-spacing: -0.03em; }
+    .step { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid #e2e8f0; }
+    .n { width: 28px; height: 28px; border-radius: 8px; background: #0f172a; color: white; display: grid; place-items: center; font-size: 13px; flex: none; }
+  </style>
+</head>
+<body>
+  <div class="logo" style="margin-bottom:12px">AM</div>
+  <h1>Akshay Medicose</h1>
+  <p class="muted">Ujjain. Install the shop app on this phone.</p>
+  <p><a id="apkBtn" class="btn primary" href="/download/UjjainMedStore-v1.0.apk">Download Android App</a></p>
+  <a id="webBtn" class="btn" href="/">Open in the browser</a>
+  <div class="step"><div class="n">1</div><div><b>Open</b><div class="muted">When the file finishes, tap Open.</div></div></div>
+  <div class="step"><div class="n">2</div><div><b>Allow</b><div class="muted">If the phone asks, allow install from this browser.</div></div></div>
+  <div class="step"><div class="n">3</div><div><b>Install</b><div class="muted">Tap Install, then open Akshay Medicose.</div></div></div>
+  <p id="apkShow" class="muted" style="word-break:break-all;font-size:12px"></p>
+  <script>
+    var q = new URLSearchParams(location.search);
+    var origin = (location.origin && location.origin !== 'null') ? location.origin : '';
+    var apk = q.get('apk') || (origin ? origin + '/download/UjjainMedStore-v1.0.apk' : '/download/UjjainMedStore-v1.0.apk');
+    var web = q.get('web') || (origin ? origin + '/' : '/');
+    document.getElementById('apkBtn').href = apk;
+    document.getElementById('webBtn').href = web;
+    document.getElementById('apkShow').textContent = apk;
+  </script>
+</body>
+</html>
