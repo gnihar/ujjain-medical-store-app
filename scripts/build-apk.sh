@@ -26,8 +26,8 @@ cat << 'XML' > "$BUILD_DIR/AndroidManifest.xml"
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ujjainmedstore.app"
-    android:versionCode="2"
-    android:versionName="2.0.0">
+    android:versionCode="3"
+    android:versionName="2.1.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />

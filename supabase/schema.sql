@@ -27,10 +27,12 @@ VALUES ('Akshay Medicose', 'Ujjain, MP', 60);
 CREATE TABLE suppliers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT NOT NULL,
+    short_code TEXT,
     gstin TEXT,
     phone TEXT,
     address TEXT,
     credit_days INTEGER NOT NULL DEFAULT 21,
+    cash_discount_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
     expiry_return_window_days INTEGER NOT NULL DEFAULT 60,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -84,7 +86,9 @@ CREATE TABLE inventory_batches (
     strips_count INTEGER NOT NULL DEFAULT 0 CHECK (strips_count >= 0),
     loose_tablets_count INTEGER NOT NULL DEFAULT 0 CHECK (loose_tablets_count >= 0),
     free_strips_received INTEGER NOT NULL DEFAULT 0,
-    ptr_per_strip NUMERIC(10,2) NOT NULL, -- Price to Retailer per strip
+    scheme_buy_qty INTEGER NOT NULL DEFAULT 0,
+    scheme_free_qty INTEGER NOT NULL DEFAULT 0,
+    ptr_per_strip NUMERIC(10,2) NOT NULL, -- Buy Price (PTR): wholesale rate paid to the stockist per strip
     mrp_per_strip NUMERIC(10,2) NOT NULL, -- Maximum Retail Price per strip
     gst_percent NUMERIC(5,2) NOT NULL DEFAULT 12.00,
     is_return_claimed BOOLEAN NOT NULL DEFAULT FALSE,
@@ -166,6 +170,8 @@ CREATE TABLE purchase_line_items (
     strips_qty INTEGER NOT NULL DEFAULT 0,
     free_strips_qty INTEGER NOT NULL DEFAULT 0,
     scheme_label TEXT,
+    scheme_buy_qty INTEGER NOT NULL DEFAULT 0,
+    scheme_free_qty INTEGER NOT NULL DEFAULT 0,
     ptr_per_strip NUMERIC(10,2) NOT NULL DEFAULT 0,
     mrp_per_strip NUMERIC(10,2) NOT NULL DEFAULT 0,
     gst_percent NUMERIC(5,2) NOT NULL DEFAULT 12
@@ -234,3 +240,26 @@ CREATE TABLE refill_schedules (
     status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'NOTIFIED', 'PAUSED')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- 14. Stockist scheme and offer matrix (brand and salt comparison across S1–S4)
+CREATE TABLE supplier_offers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    medicine_id UUID REFERENCES medicines(id) ON DELETE SET NULL,
+    brand_name TEXT NOT NULL,
+    salt_composition TEXT NOT NULL DEFAULT '',
+    buy_price_ptr NUMERIC(10,2) NOT NULL DEFAULT 0,
+    mrp NUMERIC(10,2) NOT NULL DEFAULT 0,
+    scheme_label TEXT,
+    buy_qty INTEGER NOT NULL DEFAULT 1,
+    free_qty INTEGER NOT NULL DEFAULT 0,
+    cash_discount_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+    net_buy_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+    retail_margin_pct NUMERIC(6,2) NOT NULL DEFAULT 0,
+    valid_until DATE,
+    source TEXT NOT NULL DEFAULT 'Manual Monthly Circular',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_offers_salt_trgm ON supplier_offers USING GIN (salt_composition gin_trgm_ops);
+CREATE INDEX idx_offers_brand_trgm ON supplier_offers USING GIN (brand_name gin_trgm_ops);

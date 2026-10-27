@@ -1,6 +1,7 @@
 const { db } = require('../db/database');
 const { normalizePhone } = require('./receiptService');
 const { deductSaleFEFO } = require('./fefoService');
+const commercial = require('./commercial');
 
 const STORE_TODAY = '2026-10-27';
 
@@ -71,14 +72,23 @@ function syncShortbook() {
       continue;
     }
     const last = db.prepare(`
-      SELECT b.ptr_per_strip, b.free_strips_received, b.supplier_id, s.name AS supplier_name, s.phone AS supplier_phone
+      SELECT b.ptr_per_strip, b.free_strips_received, b.scheme_buy_qty, b.scheme_free_qty,
+             b.supplier_id, s.name AS supplier_name, s.phone AS supplier_phone
       FROM inventory_batches b
       LEFT JOIN suppliers s ON s.id = b.supplier_id
       WHERE b.medicine_id = ?
       ORDER BY b.created_at DESC, b.id DESC
       LIMIT 1
     `).get(m.id);
-    const scheme = last && last.free_strips_received > 0 ? `10+${last.free_strips_received}` : '';
+    const line = db.prepare(`
+      SELECT scheme_label FROM purchase_line_items
+      WHERE medicine_id = ? AND scheme_label IS NOT NULL AND scheme_label != '' AND scheme_label != 'No Scheme'
+      ORDER BY rowid DESC LIMIT 1
+    `).get(m.id);
+    const fromBatch = last
+      ? commercial.schemeFromParts('', last.scheme_buy_qty, last.scheme_free_qty != null ? last.scheme_free_qty : last.free_strips_received)
+      : null;
+    const scheme = (line && line.scheme_label) || (fromBatch && fromBatch.free > 0 ? fromBatch.label : '');
     const open = findOpen.get(m.id);
     if (open) {
       touch.run(
@@ -112,13 +122,13 @@ function syncShortbook() {
 function insertPurchaseLine({ invoiceId, batchId, medicineId, item, packUnits, index }) {
   const free = parseInt(item.freeStrips, 10) || 0;
   const paid = parseInt(item.stripsCount, 10) || 0;
-  const scheme = item.schemeLabel || (free > 0 ? `${paid}+${free}` : '');
+  const scheme = commercial.schemeFromParts(item.schemeLabel, paid, free);
   db.prepare(`
     INSERT INTO purchase_line_items (
       id, invoice_id, batch_id, medicine_id, brand_name, salt_composition, pack_label,
       rack_location, batch_number, expiry_date, strips_qty, free_strips_qty, scheme_label,
-      ptr_per_strip, mrp_per_strip, gst_percent
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      scheme_buy_qty, scheme_free_qty, ptr_per_strip, mrp_per_strip, gst_percent
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     `li-${invoiceId}-${index}`,
     invoiceId,
@@ -132,11 +142,14 @@ function insertPurchaseLine({ invoiceId, batchId, medicineId, item, packUnits, i
     item.expiryDate || '',
     paid,
     free,
-    scheme,
+    scheme.label,
+    scheme.buy,
+    scheme.free,
     parseFloat(item.ptrPerStrip) || 0,
     parseFloat(item.mrpPerStrip) || 0,
     parseFloat(item.gstPercent) || 12
   );
+  return scheme;
 }
 
 function searchInvoices({ q = '', status = 'ALL', from = '', to = '' } = {}) {
@@ -257,7 +270,7 @@ function orderPack(supplierId) {
         `${i + 1}. ${it.brand_name}`,
         `   Pack: ${it.pack_label || '—'}`,
         `   Qty: ${it.requested_strips} strips`,
-        `   Last Supplied PTR: ${it.last_ptr != null ? money(it.last_ptr) : '—'}`
+        `   Last Buy Price (PTR): ${it.last_ptr != null ? money(it.last_ptr) : '—'}`
       ];
       if (it.last_scheme) bits.push(`   Scheme: ${it.last_scheme}`);
       if (it.note) bits.push(`   Note: ${it.note}`);
@@ -445,14 +458,16 @@ function refillAlert(id) {
   const row = db.prepare('SELECT * FROM refill_schedules WHERE id = ?').get(id);
   if (!row) throw new Error('Refill schedule not found');
   const settings = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
-  const text = [
-    settings.store_name,
-    settings.city,
-    `Hello ${row.patient_name},`,
-    `Your refill for ${row.brand_name} (${row.strips_qty} strips) is due on ${row.next_due_date}.`,
-    'Please visit the counter or reply to confirm.',
-    settings.phone
-  ].join('\n');
+  const text = commercial.refillAlertLines({
+    lang: settings.default_language,
+    storeName: settings.store_name,
+    city: settings.city,
+    phone: settings.phone,
+    patientName: row.patient_name,
+    brandName: row.brand_name,
+    stripsQty: row.strips_qty,
+    nextDue: row.next_due_date
+  }).join('\n');
   return { text, whatsappUrl: waLink(row.phone, text), refill: row };
 }
 
@@ -478,6 +493,160 @@ function fulfillRefill(id) {
     sale,
     refill: db.prepare('SELECT * FROM refill_schedules WHERE id = ?').get(id)
   };
+}
+
+function lowStockMedicineCount() {
+  const rows = db.prepare(`
+    SELECT m.id, m.min_reorder_strips AS min_strips, COALESCE(SUM(b.strips_count), 0) AS strips
+    FROM medicines m
+    LEFT JOIN inventory_batches b ON b.medicine_id = m.id
+    GROUP BY m.id
+  `).all();
+  const ids = rows.filter(row => Number(row.strips) <= Number(row.min_strips || 0)).map(row => row.id);
+  return { count: ids.length, ids };
+}
+
+function saveSupplier(body = {}, id) {
+  const name = String(body.name || body.supplierName || '').trim();
+  if (!name) throw new Error('Supplier name is required');
+  const phone = normalizePhone(body.phone || body.whatsapp || '');
+  const shortCode = String(body.shortCode || body.short_code || '').trim();
+  const gstin = String(body.gstin || '').trim();
+  const address = String(body.address || '').trim();
+  const creditDays = Math.max(0, parseInt(body.creditDays != null ? body.creditDays : body.credit_days, 10) || 0);
+  const cashDiscount = commercial.round2(body.cashDiscountPct != null ? body.cashDiscountPct : body.cash_discount_pct);
+  if (id) {
+    const existing = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id);
+    if (!existing) throw new Error('Supplier not found');
+    db.prepare(`
+      UPDATE suppliers
+      SET name = ?, short_code = ?, gstin = ?, phone = ?, address = ?, credit_days = ?, cash_discount_pct = ?
+      WHERE id = ?
+    `).run(
+      name,
+      shortCode || existing.short_code || '',
+      gstin || existing.gstin || '',
+      phone,
+      address || existing.address || '',
+      creditDays || existing.credit_days || 21,
+      Number.isFinite(cashDiscount) ? cashDiscount : (existing.cash_discount_pct || 0),
+      id
+    );
+    return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(id);
+  }
+  const newId = 'sup-' + Date.now();
+  db.prepare(`
+    INSERT INTO suppliers (id, name, short_code, gstin, phone, address, credit_days, cash_discount_pct, expiry_return_window_days)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 60)
+  `).run(newId, name, shortCode, gstin, phone, address || 'Ujjain', creditDays || 21, cashDiscount || 0);
+  return db.prepare('SELECT * FROM suppliers WHERE id = ?').get(newId);
+}
+
+function listOffers(filter = {}) {
+  const rows = db.prepare(`
+    SELECT o.*, s.name AS supplier_name, s.short_code, s.phone AS supplier_phone
+    FROM supplier_offers o
+    JOIN suppliers s ON s.id = o.supplier_id
+    ORDER BY o.salt_composition, o.retail_margin_pct DESC, o.brand_name
+  `).all();
+  let list = commercial.decorateOffers(rows);
+  const mode = String(filter.mode || '').toLowerCase();
+  const q = String(filter.q || filter.query || '').trim().toLowerCase();
+  if (q) {
+    list = list.filter(row => {
+      if (mode === 'brand') return String(row.brand_name || '').toLowerCase().includes(q);
+      if (mode === 'salt') return String(row.salt_composition || '').toLowerCase().includes(q);
+      return String(row.brand_name || '').toLowerCase().includes(q) || String(row.salt_composition || '').toLowerCase().includes(q);
+    });
+  }
+  if (filter.supplierId) list = list.filter(row => row.supplier_id === filter.supplierId);
+  return list;
+}
+
+function upsertOffer(body = {}, id) {
+  const record = commercial.buildOfferRecord(body);
+  if (!record.supplier_id) throw new Error('Choose a stockist');
+  if (!record.brand_name) throw new Error('Brand name is required');
+  const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(record.supplier_id);
+  if (!supplier) throw new Error('Supplier not found');
+  const offerId = id || body.id || ('off-' + Date.now() + '-' + Math.floor(Math.random() * 100000));
+  const existing = db.prepare('SELECT id FROM supplier_offers WHERE id = ?').get(offerId);
+  if (existing) {
+    db.prepare(`
+      UPDATE supplier_offers
+      SET supplier_id = ?, medicine_id = ?, brand_name = ?, salt_composition = ?, buy_price_ptr = ?, mrp = ?,
+          scheme_label = ?, buy_qty = ?, free_qty = ?, cash_discount_pct = ?, net_buy_price = ?, retail_margin_pct = ?,
+          valid_until = ?, source = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      record.supplier_id, record.medicine_id, record.brand_name, record.salt_composition, record.buy_price_ptr, record.mrp,
+      record.scheme_label, record.buy_qty, record.free_qty, record.cash_discount_pct, record.net_buy_price, record.retail_margin_pct,
+      record.valid_until, record.source, offerId
+    );
+  } else {
+    db.prepare(`
+      INSERT INTO supplier_offers (
+        id, supplier_id, medicine_id, brand_name, salt_composition, buy_price_ptr, mrp, scheme_label,
+        buy_qty, free_qty, cash_discount_pct, net_buy_price, retail_margin_pct, valid_until, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      offerId, record.supplier_id, record.medicine_id, record.brand_name, record.salt_composition, record.buy_price_ptr, record.mrp,
+      record.scheme_label, record.buy_qty, record.free_qty, record.cash_discount_pct, record.net_buy_price, record.retail_margin_pct,
+      record.valid_until, record.source
+    );
+  }
+  return listOffers().find(row => row.id === offerId);
+}
+
+function learnOfferFromBill({ supplierId, medicine, item }) {
+  if (!supplierId || !medicine) return null;
+  const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+  const scheme = commercial.schemeFromParts(item.schemeLabel, item.stripsCount, item.freeStrips);
+  const brand = medicine.brand_name || item.brandName;
+  const existing = db.prepare(`
+    SELECT id FROM supplier_offers
+    WHERE supplier_id = ? AND LOWER(brand_name) = LOWER(?) AND source = ?
+  `).get(supplierId, brand, commercial.SOURCE_AUTO);
+  return upsertOffer({
+    id: existing ? existing.id : undefined,
+    supplierId,
+    medicineId: medicine.id,
+    brandName: brand,
+    saltComposition: medicine.salt_composition || item.saltComposition || '',
+    buyPricePtr: item.ptrPerStrip,
+    mrp: item.mrpPerStrip,
+    schemeLabel: scheme.label,
+    buyQty: scheme.buy,
+    freeQty: scheme.free,
+    cashDiscountPct: supplier ? supplier.cash_discount_pct : 0,
+    source: commercial.SOURCE_AUTO
+  }, existing ? existing.id : undefined);
+}
+
+function orderOfferToShortbook(offerId, body = {}) {
+  const offer = db.prepare(`
+    SELECT o.*, s.name AS supplier_name, s.phone AS supplier_phone, s.short_code
+    FROM supplier_offers o
+    JOIN suppliers s ON s.id = o.supplier_id
+    WHERE o.id = ?
+  `).get(offerId);
+  if (!offer) throw new Error('Offer not found');
+  return addShortbook({
+    brandName: offer.brand_name,
+    packLabel: body.packLabel || '',
+    supplierId: offer.supplier_id,
+    requestedStrips: body.requestedStrips || 1,
+    lastPtr: offer.net_buy_price,
+    lastScheme: offer.scheme_label,
+    note: 'Order this deal — ' + (offer.short_code || offer.supplier_name) + ' net ' + money(offer.net_buy_price)
+  });
+}
+
+function seedManualOffers() {
+  for (const offer of commercial.MANUAL_OFFERS) {
+    if (db.prepare('SELECT id FROM supplier_offers WHERE id = ?').get(offer.id)) continue;
+    upsertOffer(Object.assign({}, offer, { source: commercial.SOURCE_MANUAL }), offer.id);
+  }
 }
 
 function v2Payload() {
@@ -506,7 +675,8 @@ function v2Payload() {
     refills,
     pendingCreditBalance,
     dueRefillCount,
-    shortbookCount: shortbook.length
+    shortbookCount: shortbook.length,
+    offers: listOffers()
   };
 }
 
@@ -528,5 +698,13 @@ module.exports = {
   markRefillNotified,
   refillAlert,
   fulfillRefill,
-  v2Payload
+  v2Payload,
+  lowStockMedicineCount,
+  saveSupplier,
+  listOffers,
+  upsertOffer,
+  learnOfferFromBill,
+  orderOfferToShortbook,
+  seedManualOffers,
+  commercial
 };

@@ -59,6 +59,8 @@ function getFullState() {
   `).all();
 
   const alertDays = settings ? settings.expiry_alert_days : 60;
+  const lowStock = modules.lowStockMedicineCount();
+  const lowMedicineIds = new Set(lowStock.ids);
 
   const batches = rawBatches.map(b => {
     const daysToExpiry = computeDaysToExpiry(b.expiry_date);
@@ -74,12 +76,11 @@ function getFullState() {
       ptr_value: ptrValue,
       mrp_value: mrpValue,
       is_expiring_soon: daysToExpiry <= alertDays && !b.is_return_claimed && totalUnits > 0,
-      is_low_stock: b.strips_count < b.min_reorder_strips
+      is_low_stock: lowMedicineIds.has(b.medicine_id)
     };
   });
 
   const expiringBatches = batches.filter(b => b.is_expiring_soon);
-  const lowStockBatches = batches.filter(b => b.is_low_stock);
 
   // Build supplier-grouped WhatsApp expiry return summary
   const supplierGroups = {};
@@ -98,21 +99,15 @@ function getFullState() {
   }
 
   const whatsappReturnSummary = Object.values(supplierGroups).map(g => {
-    const lines = [
-      `*EXPIRY RETURN / CREDIT NOTE CLAIM*`,
-      `From: *${settings.store_name}*`,
-      `अक्षय मेडिकोज़, उज्जैन`,
-      `(${settings.city})`,
-      `To: *${g.supplierName}*`,
-      `Return Window: Within ${alertDays} Days of Expiry`,
-      `----------------------------------------`,
-      ...g.items.map((it, idx) =>
-        `${idx + 1}. *${it.brand_name}* | Batch: ${it.batch_number} | Exp: ${it.expiry_date} (${it.days_to_expiry}d) | Qty: ${it.strips_count} Strips + ${it.loose_tablets_count} Loose | Bill: ${it.invoice_number || 'N/A'} | PTR Credit: Rs.${it.ptr_value}`
-      ),
-      `----------------------------------------`,
-      `*Total Credit Note Claim (PTR): Rs.${g.totalCreditValuePtr.toLocaleString('en-IN')}*`,
-      `Please collect return goods on next delivery visit.`
-    ];
+    const lines = modules.commercial.expiryClaimLines({
+      lang: settings && settings.default_language,
+      storeName: settings.store_name,
+      city: settings.city,
+      supplierName: g.supplierName,
+      alertDays,
+      items: g.items,
+      total: g.totalCreditValuePtr
+    });
     return {
       ...g,
       whatsappText: lines.join('\n')
@@ -138,7 +133,7 @@ function getFullState() {
       avgMarginPercent,
       expiringCount: expiringBatches.length,
       expiringPtrValue,
-      lowStockCount: lowStockBatches.length,
+      lowStockCount: lowStock.count,
       todaySalesCount: activeSales.length,
       todaySalesAmount,
       pendingCreditBalance: extra.pendingCreditBalance,
@@ -153,6 +148,7 @@ function getFullState() {
     customers: extra.customers,
     creditTransactions: extra.creditTransactions,
     refills: extra.refills,
+    offers: extra.offers,
     batches,
     expiringBatches,
     whatsappReturnSummary,
@@ -272,8 +268,8 @@ router.post('/invoices', (req, res) => {
         } else {
           supId = 'sup-' + Date.now();
           db.prepare(`
-            INSERT INTO suppliers (id, name, gstin, phone, address, credit_days, expiry_return_window_days)
-            VALUES (?, ?, ?, '+91 94250 00000', 'Ujjain, MP', 21, 60)
+            INSERT INTO suppliers (id, name, short_code, gstin, phone, address, credit_days, cash_discount_pct, expiry_return_window_days)
+            VALUES (?, ?, '', ?, '+91 94250 00000', 'Ujjain, MP', 21, 0, 60)
           `).run(supId, supplierName || 'New Ujjain Stockist', gstin || '23AABCM0000A1Z1');
         }
       }
@@ -340,13 +336,14 @@ router.post('/invoices', (req, res) => {
         }
 
         const totalStrips = (parseInt(it.stripsCount, 10) || 0) + (parseInt(it.freeStrips, 10) || 0);
+        const scheme = modules.commercial.schemeFromParts(it.schemeLabel, it.stripsCount, it.freeStrips);
         const batchId = 'b-' + Date.now() + '-' + i;
         db.prepare(`
           INSERT INTO inventory_batches (
             id, medicine_id, supplier_id, purchase_invoice_id, batch_number, expiry_date,
             pack_size_units, strips_count, loose_tablets_count, free_strips_received,
-            ptr_per_strip, mrp_per_strip, gst_percent
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            scheme_buy_qty, scheme_free_qty, ptr_per_strip, mrp_per_strip, gst_percent
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           batchId,
           med.id,
@@ -358,6 +355,8 @@ router.post('/invoices', (req, res) => {
           totalStrips,
           parseInt(it.looseTabletsCount, 10) || 0,
           parseInt(it.freeStrips, 10) || 0,
+          scheme.buy,
+          scheme.free,
           parseFloat(it.ptrPerStrip) || 85,
           parseFloat(it.mrpPerStrip) || 120,
           parseFloat(it.gstPercent) || 12
@@ -370,6 +369,8 @@ router.post('/invoices', (req, res) => {
           packUnits,
           index: i
         });
+        const savedMed = db.prepare('SELECT * FROM medicines WHERE id = ?').get(med.id);
+        modules.learnOfferFromBill({ supplierId: supId, medicine: savedMed, item: it });
       }
     });
 
@@ -619,7 +620,8 @@ router.post('/sales/:id/customer', (req, res) => {
       storeName: settings.store_name,
       city: settings.city,
       sale: updated,
-      expiryDate: batch ? batch.expiry_date : ''
+      expiryDate: batch ? batch.expiry_date : '',
+      lang: settings.default_language
     });
     res.json({ ok: true, sale: updated, receiptText: receipt.text, whatsappUrl: receipt.whatsappUrl, data: getFullState() });
   } catch (err) {
@@ -758,6 +760,74 @@ router.post('/invoices/:id/payment', (req, res) => {
   try {
     const invoice = modules.setInvoicePayment(req.params.id, req.body || {});
     res.json({ ok: true, invoice, data: getFullState() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/suppliers', (req, res) => {
+  try {
+    const supplier = modules.saveSupplier(req.body || {});
+    res.json({ ok: true, supplier, data: getFullState() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.put('/suppliers/:id', (req, res) => {
+  try {
+    const supplier = modules.saveSupplier(req.body || {}, req.params.id);
+    res.json({ ok: true, supplier, data: getFullState() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/offers', (req, res) => {
+  try {
+    const offers = modules.listOffers({
+      mode: req.query.mode || '',
+      q: req.query.q || '',
+      supplierId: req.query.supplierId || ''
+    });
+    res.json({ ok: true, offers });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.get('/offers/compare', (req, res) => {
+  try {
+    const offers = modules.listOffers({ mode: req.query.mode || 'salt', q: req.query.q || '' });
+    const best = offers.find(row => row.best_margin) || null;
+    res.json({ ok: true, mode: req.query.mode || 'salt', query: req.query.q || '', offers, best });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/offers', (req, res) => {
+  try {
+    const offer = modules.upsertOffer(Object.assign({}, req.body || {}, { source: (req.body && req.body.source) || modules.commercial.SOURCE_MANUAL }));
+    res.json({ ok: true, offer, data: getFullState() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.put('/offers/:id', (req, res) => {
+  try {
+    const offer = modules.upsertOffer(req.body || {}, req.params.id);
+    res.json({ ok: true, offer, data: getFullState() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+router.post('/offers/:id/shortbook', (req, res) => {
+  try {
+    const item = modules.orderOfferToShortbook(req.params.id, req.body || {});
+    res.json({ ok: true, item, data: getFullState() });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message });
   }

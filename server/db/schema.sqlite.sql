@@ -16,10 +16,12 @@ CREATE TABLE IF NOT EXISTS store_settings (
 CREATE TABLE IF NOT EXISTS suppliers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    short_code TEXT,
     gstin TEXT NOT NULL,
     phone TEXT NOT NULL,
     address TEXT NOT NULL,
     credit_days INTEGER NOT NULL DEFAULT 21,
+    cash_discount_pct REAL NOT NULL DEFAULT 0,
     expiry_return_window_days INTEGER NOT NULL DEFAULT 60,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -68,6 +70,8 @@ CREATE TABLE IF NOT EXISTS inventory_batches (
     strips_count INTEGER NOT NULL DEFAULT 0,
     loose_tablets_count INTEGER NOT NULL DEFAULT 0,
     free_strips_received INTEGER NOT NULL DEFAULT 0,
+    scheme_buy_qty INTEGER NOT NULL DEFAULT 0,
+    scheme_free_qty INTEGER NOT NULL DEFAULT 0,
     ptr_per_strip REAL NOT NULL DEFAULT 0,
     mrp_per_strip REAL NOT NULL DEFAULT 0,
     gst_percent REAL NOT NULL DEFAULT 12.0,
@@ -131,6 +135,8 @@ CREATE TABLE IF NOT EXISTS purchase_line_items (
     strips_qty INTEGER NOT NULL DEFAULT 0,
     free_strips_qty INTEGER NOT NULL DEFAULT 0,
     scheme_label TEXT,
+    scheme_buy_qty INTEGER NOT NULL DEFAULT 0,
+    scheme_free_qty INTEGER NOT NULL DEFAULT 0,
     ptr_per_strip REAL NOT NULL DEFAULT 0,
     mrp_per_strip REAL NOT NULL DEFAULT 0,
     gst_percent REAL NOT NULL DEFAULT 12
@@ -200,3 +206,26 @@ CREATE TABLE IF NOT EXISTS refill_schedules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_refill_due ON refill_schedules (next_due_date);
+
+CREATE TABLE IF NOT EXISTS supplier_offers (
+    id TEXT PRIMARY KEY,
+    supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+    medicine_id TEXT,
+    brand_name TEXT NOT NULL,
+    salt_composition TEXT NOT NULL DEFAULT '',
+    buy_price_ptr REAL NOT NULL DEFAULT 0,
+    mrp REAL NOT NULL DEFAULT 0,
+    scheme_label TEXT,
+    buy_qty INTEGER NOT NULL DEFAULT 1,
+    free_qty INTEGER NOT NULL DEFAULT 0,
+    cash_discount_pct REAL NOT NULL DEFAULT 0,
+    net_buy_price REAL NOT NULL DEFAULT 0,
+    retail_margin_pct REAL NOT NULL DEFAULT 0,
+    valid_until TEXT,
+    source TEXT NOT NULL DEFAULT 'Manual Monthly Circular',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_offers_salt ON supplier_offers (salt_composition);
+CREATE INDEX IF NOT EXISTS idx_offers_brand ON supplier_offers (brand_name);
+CREATE INDEX IF NOT EXISTS idx_offers_supplier ON supplier_offers (supplier_id);

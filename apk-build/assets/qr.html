@@ -76,7 +76,7 @@
       else if (mode === 'lan') paint(LOCAL);
       else paint(document.getElementById('customUrl').value || current);
     });
-    document.getElementById('customUrl').addEventListener('change', function () {
+    document.getElementById('customUrl').addEventListener('input', function () {
       if (mode === 'custom' && this.value) paint(this.value.trim());
     });
     document.getElementById('copyBtn').addEventListener('click', function () {

@@ -90,6 +90,7 @@ img { max-width: 100%; }
   padding: 8px 12px; border-radius: 9px; white-space: nowrap; font-weight: 550;
 }
 .modnav button.on { background: #eef2ff; color: #1e3a8a; }
+tr.best-deal { background: #ecfdf5; }
 
 main { padding: 20px; max-width: 1180px; margin: 0 auto; }
 .page-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-end; margin-bottom: 14px; flex-wrap: wrap; }

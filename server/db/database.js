@@ -76,6 +76,18 @@ function ensureColumns() {
       db.exec('ALTER TABLE purchase_invoices ADD COLUMN payment_reference TEXT');
     }
   }
+  const addCol = (table, column, ddl) => {
+    const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table);
+    if (!exists) return;
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+    if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addCol('suppliers', 'short_code', 'short_code TEXT');
+  addCol('suppliers', 'cash_discount_pct', 'cash_discount_pct REAL NOT NULL DEFAULT 0');
+  addCol('inventory_batches', 'scheme_buy_qty', 'scheme_buy_qty INTEGER NOT NULL DEFAULT 0');
+  addCol('inventory_batches', 'scheme_free_qty', 'scheme_free_qty INTEGER NOT NULL DEFAULT 0');
+  addCol('purchase_line_items', 'scheme_buy_qty', 'scheme_buy_qty INTEGER NOT NULL DEFAULT 0');
+  addCol('purchase_line_items', 'scheme_free_qty', 'scheme_free_qty INTEGER NOT NULL DEFAULT 0');
 }
 
 function backfillV2() {
@@ -115,11 +127,13 @@ function backfillV2() {
     INSERT INTO purchase_line_items (
       id, invoice_id, batch_id, medicine_id, brand_name, salt_composition, pack_label,
       rack_location, batch_number, expiry_date, strips_qty, free_strips_qty, scheme_label,
-      ptr_per_strip, mrp_per_strip, gst_percent
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      scheme_buy_qty, scheme_free_qty, ptr_per_strip, mrp_per_strip, gst_percent
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const b of missingLines) {
     const free = b.free_strips_received || 0;
+    const buy = b.scheme_buy_qty > 0 ? b.scheme_buy_qty : (free > 0 ? 10 : 1);
+    const label = free > 0 ? `${buy}+${free}` : 'No Scheme';
     insertLine.run(
       'li-' + b.id,
       b.purchase_invoice_id,
@@ -133,11 +147,19 @@ function backfillV2() {
       b.expiry_date,
       b.strips_count,
       free,
-      free > 0 ? `10+${free}` : '',
+      label,
+      buy,
+      free,
       b.ptr_per_strip,
       b.mrp_per_strip,
       b.gst_percent
     );
+  }
+  try {
+    const { seedManualOffers } = require('../services/storeModules');
+    seedManualOffers();
+  } catch (err) {
+    console.error('Offer seed skipped:', err.message);
   }
 
   if (!db.prepare("SELECT id FROM customer_accounts WHERE id = 'cus-1'").get()) {
@@ -167,6 +189,26 @@ function backfillV2() {
     insertRef.run('ref-2', 'cus-2', 'Meena Joshi', '9826022222', 'med-8', 'Glycomet-GP 2 Tablet', 'Glimepiride 2mg + Metformin 500mg', 1, 30, '2026-09-29', '2026-10-29');
     insertRef.run('ref-3', 'cus-3', 'Suresh Verma', '9826033333', 'med-14', 'Ecosprin-AV 75 Tablet', 'Aspirin 75mg + Atorvastatin 10mg', 1, 30, '2026-10-01', '2026-10-30');
   }
+
+  const codes = [
+    ['sup-1', 'S1', 0],
+    ['sup-2', 'S2', 2],
+    ['sup-3', 'S3', 1],
+    ['sup-4', 'S4', 0]
+  ];
+  for (const [id, code, discount] of codes) {
+    db.prepare(`
+      UPDATE suppliers
+      SET short_code = ?, cash_discount_pct = ?
+      WHERE id = ? AND (short_code IS NULL OR TRIM(short_code) = '')
+    `).run(code, discount, id);
+  }
+  db.prepare(`
+    UPDATE inventory_batches
+    SET scheme_free_qty = free_strips_received,
+        scheme_buy_qty = CASE WHEN free_strips_received > 0 THEN 10 ELSE 1 END
+    WHERE scheme_buy_qty IS NULL OR scheme_buy_qty = 0
+  `).run();
 
   if (!db.prepare("SELECT id FROM shortbook_items WHERE id = 'sb-manual-1'").get()) {
     db.prepare(`
@@ -203,6 +245,7 @@ function seedDatabase(forceReset = false) {
       DELETE FROM sales_entries;
       DELETE FROM inventory_batches;
       DELETE FROM purchase_invoices;
+      DELETE FROM supplier_offers;
       DELETE FROM medicines;
       DELETE FROM suppliers;
       DELETE FROM store_settings;
@@ -264,13 +307,13 @@ function seedDatabase(forceReset = false) {
     `).run();
 
     const insertSupplier = db.prepare(`
-      INSERT INTO suppliers (id, name, gstin, phone, address, credit_days, expiry_return_window_days)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO suppliers (id, name, short_code, gstin, phone, address, credit_days, cash_discount_pct, expiry_return_window_days)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    insertSupplier.run('sup-1', 'Mahakal Pharma Agency, Ujjain', '23AABCM4821E1Z4', '+91 94250 91101', '14, Freeganj Main Road, Ujjain', 21, 60);
-    insertSupplier.run('sup-2', 'Malwa Medico Traders, Ujjain', '23AADCM9102F1Z9', '+91 98270 33219', 'Shop 8, Dewas Gate Wholesale Market, Ujjain', 30, 60);
-    insertSupplier.run('sup-3', 'Shipra Drug House, Ujjain', '23AAECS7731H1Z2', '+91 99260 77812', 'Nazar Ali Marg, Near Kotwali, Ujjain', 15, 60);
-    insertSupplier.run('sup-4', 'Avantika Pharma Distributors, Ujjain', '23AABCA5519K1Z1', '+91 97550 61230', 'Tower Chowk, Freeganj, Ujjain', 21, 90);
+    insertSupplier.run('sup-1', 'Mahakal Pharma Agency, Ujjain', 'S1', '23AABCM4821E1Z4', '+91 94250 91101', '14, Freeganj Main Road, Ujjain', 21, 0, 60);
+    insertSupplier.run('sup-2', 'Malwa Medico Traders, Ujjain', 'S2', '23AADCM9102F1Z9', '+91 98270 33219', 'Shop 8, Dewas Gate Wholesale Market, Ujjain', 30, 2, 60);
+    insertSupplier.run('sup-3', 'Shipra Drug House, Ujjain', 'S3', '23AAECS7731H1Z2', '+91 99260 77812', 'Nazar Ali Marg, Near Kotwali, Ujjain', 15, 1, 60);
+    insertSupplier.run('sup-4', 'Avantika Pharma Distributors, Ujjain', 'S4', '23AABCA5519K1Z1', '+91 97550 61230', 'Tower Chowk, Freeganj, Ujjain', 21, 0, 90);
 
     const insertMed = db.prepare(`
       INSERT INTO medicines (id, brand_name, salt_composition, manufacturer, pack_size_units, pack_label, rack_location, schedule_type, hsn_code, gst_percent, min_reorder_strips)
@@ -343,10 +386,10 @@ function seedDatabase(forceReset = false) {
   backfillV2();
 }
 
-seedDatabase(false);
-
 module.exports = {
   db,
   seedDatabase,
   generateSampleBillSvg
 };
+
+seedDatabase(false);

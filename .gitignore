@@ -8,3 +8,5 @@ apk-build/aligned.apk
 apk-build/signed/
 apk-build/tools/*.jar
 *.idsig
+__pycache__/
+*.pyc

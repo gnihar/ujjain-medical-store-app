@@ -26,10 +26,10 @@ function deductSaleFEFO({ medicineId, batchId, stripsSold = 0, looseTabletsSold 
       FROM inventory_batches b
       JOIN medicines m ON m.id = b.medicine_id
       WHERE b.medicine_id = ?
-        AND (b.strips_count * b.pack_size_units + b.loose_tablets_count) >= ?
+        AND (b.strips_count * b.pack_size_units + b.loose_tablets_count) >= (? * b.pack_size_units + ?)
       ORDER BY b.expiry_date ASC
       LIMIT 1
-    `).get(medicineId, sSold * 10 + lSold);
+    `).get(medicineId, sSold, lSold);
 
     if (!targetBatch) {
       targetBatch = db.prepare(`
