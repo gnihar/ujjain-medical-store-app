@@ -22,7 +22,11 @@ async function runTests() {
   assert.strictEqual(boot.json.data.settings.store_name, 'Akshay Medicose');
   assert.strictEqual(String(boot.json.data.settings.owner_pin), '1234');
   assert(boot.json.data.whatsappReturnSummary[0].whatsappText.includes('Akshay Medicose'));
-  assert(boot.json.data.whatsappReturnSummary[0].whatsappText.includes('अक्षय मेडिकोज़'));
+  assert(boot.json.data.whatsappReturnSummary[0].whatsappText.includes('Buy Price (PTR)'));
+  assert(!boot.json.data.whatsappReturnSummary[0].whatsappText.includes('अक्षय मेडिकोज़'));
+  const autos = boot.json.data.shortbook.filter(item => item.source === 'AUTO');
+  assert.strictEqual(boot.json.data.kpis.lowStockCount, autos.length, 'Dashboard low-stock count should match shortbook medicines');
+  assert(boot.json.data.offers && boot.json.data.offers.length >= 4, 'Expected seeded stockist offers');
   assert(boot.json.data.batches.length >= 14, 'Expected at least 14 seeded batches');
   assert(boot.json.data.whatsappReturnSummary.length >= 2, 'Expected supplier WhatsApp return summaries');
   console.log('   OK -> Active batches:', boot.json.data.kpis.totalActiveBatches, '| Expiring (<=60d):', boot.json.data.kpis.expiringCount);
@@ -38,6 +42,8 @@ async function runTests() {
   assert.strictEqual(badPin.status, 400);
   const pinBack = await req('PUT', '/api/settings', { owner_pin: '1234', expiry_alert_days: 60, default_language: 'hi' });
   assert.strictEqual(String(pinBack.json.data.settings.owner_pin), '1234');
+  assert(pinBack.json.data.whatsappReturnSummary[0].whatsappText.includes('अक्षय मेडिकोज़'));
+  assert(!pinBack.json.data.whatsappReturnSummary[0].whatsappText.includes('EXPIRY RETURN'));
   console.log('   OK -> Configurable expiry window and owner PIN verified.');
 
   console.log('3. Testing POST /api/ocr/parse & POST /api/invoices...');
@@ -85,6 +91,18 @@ async function runTests() {
   assert.strictEqual(saleRes.json.sale.new_loose_tablets, 8);
   console.log('   OK -> FEFO Sale deducted 1 strip + 8 loose from AG624 -> 12 strips + 8 loose remaining.');
 
+  await req('PUT', '/api/settings', { default_language: 'en' });
+  const enShare = await req('POST', `/api/sales/${saleRes.json.sale.id}/customer`, {
+    patientName: 'Mohan Lal',
+    customerPhone: '9826012345'
+  });
+  assert.strictEqual(enShare.json.ok, true);
+  assert(enShare.json.receiptText.includes('Akshay Medicose'));
+  assert(enShare.json.receiptText.includes('Thank you.'));
+  assert(enShare.json.receiptText.includes('strips'));
+  assert(!enShare.json.receiptText.includes('अक्षय मेडिकोज़'));
+  assert(!enShare.json.receiptText.includes('धन्यवाद'));
+  await req('PUT', '/api/settings', { default_language: 'hi' });
   const cust = await req('POST', `/api/sales/${saleRes.json.sale.id}/customer`, {
     patientName: 'मोहन लाल',
     customerPhone: '9826012345'
@@ -93,10 +111,11 @@ async function runTests() {
   assert.strictEqual(cust.json.ok, true);
   assert.strictEqual(cust.json.sale.customer_phone, '9826012345');
   assert.strictEqual(cust.json.sale.patient_name, 'मोहन लाल');
-  assert(cust.json.receiptText.includes('Akshay Medicose'));
   assert(cust.json.receiptText.includes('अक्षय मेडिकोज़'));
+  assert(cust.json.receiptText.includes('पूरी पत्ती'));
+  assert(cust.json.receiptText.includes('धन्यवाद'));
+  assert(!cust.json.receiptText.includes('Thank you'));
   assert(cust.json.receiptText.includes(saleRes.json.sale.brand_name));
-  assert(cust.json.receiptText.includes('Strip'));
   assert(cust.json.receiptText.includes('₹'));
   assert(cust.json.whatsappUrl.startsWith('https://wa.me/919826012345?text='));
   const badPhone = await req('POST', `/api/sales/${saleRes.json.sale.id}/customer`, { customerPhone: '12345' });
@@ -144,7 +163,7 @@ async function runTests() {
   assert(book.some(item => item.brand_name === 'Crocin Advance Tablet'), 'Expected the manual shortbook line');
   const order = await req('GET', '/api/shortbook/order?supplierId=sup-3');
   assert.strictEqual(order.json.ok, true);
-  assert(order.json.text.includes('Last Supplied PTR'));
+  assert(order.json.text.includes('Last Buy Price (PTR)'));
   assert(order.json.whatsappUrl.startsWith('https://wa.me/91'));
   const added = await req('POST', '/api/shortbook', {
     brandName: 'Test Missing Syrup',
@@ -203,6 +222,120 @@ async function runTests() {
   assert.strictEqual(refilled.json.sale.strips_sold, 1);
   assert.strictEqual(refilled.json.sale.brand_name, 'Ecosprin-AV 75 Tablet');
   console.log('   OK -> Bills, shortbook, credit ledger, and monthly refills.');
+
+  console.log('7c. Testing 15-tablet FEFO selection, suppliers, and stockist schemes...');
+  const early = await req('POST', '/api/onboarding/quick-rack', {
+    rackLocation: 'Rack C-1',
+    brandName: 'Strip15 Probe Tab',
+    saltComposition: 'Probe Salt 15',
+    packSizeUnits: 15,
+    batchNumber: 'P15E',
+    expiryDate: '2026-11-15',
+    stripsCount: 1,
+    looseTabletsCount: 0,
+    ptrPerStrip: 30,
+    mrpPerStrip: 45
+  });
+  assert.strictEqual(early.json.ok, true);
+  const later = await req('POST', '/api/onboarding/quick-rack', {
+    rackLocation: 'Rack C-1',
+    brandName: 'Strip15 Probe Tab',
+    saltComposition: 'Probe Salt 15',
+    packSizeUnits: 15,
+    batchNumber: 'P15L',
+    expiryDate: '2027-06-30',
+    stripsCount: 4,
+    looseTabletsCount: 0,
+    ptrPerStrip: 30,
+    mrpPerStrip: 45
+  });
+  assert.strictEqual(later.json.ok, true);
+  const probe = later.json.data.medicines.find(m => m.brand_name === 'Strip15 Probe Tab');
+  const probeSale = await req('POST', '/api/sales', {
+    medicineId: probe.id,
+    stripsSold: 1,
+    looseTabletsSold: 4
+  });
+  assert.strictEqual(probeSale.json.ok, true, probeSale.json.error);
+  assert.strictEqual(probeSale.json.sale.batch_number, 'P15L');
+  assert.strictEqual(probeSale.json.sale.pack_size_units, 15);
+  assert.strictEqual(probeSale.json.sale.total_units_deducted, 19);
+
+  const created = await req('POST', '/api/suppliers', {
+    name: 'Freeganj Wholesale',
+    shortCode: 'S5',
+    phone: '9876543210',
+    gstin: '23AAAAA0000A1Z5',
+    address: 'Freeganj, Ujjain',
+    creditDays: 15,
+    cashDiscountPct: 1
+  });
+  assert.strictEqual(created.json.ok, true);
+  assert.strictEqual(created.json.supplier.short_code, 'S5');
+  assert.strictEqual(String(created.json.supplier.phone).replace(/\D/g, '').slice(-10), '9876543210');
+  const edited = await req('PUT', '/api/suppliers/' + created.json.supplier.id, {
+    name: 'Freeganj Wholesale Desk',
+    shortCode: 'S5',
+    phone: '9123456780',
+    gstin: '23AAAAA0000A1Z5',
+    address: 'Freeganj, Ujjain',
+    creditDays: 18,
+    cashDiscountPct: 1.5
+  });
+  assert.strictEqual(edited.json.ok, true);
+  assert.strictEqual(edited.json.supplier.name, 'Freeganj Wholesale Desk');
+  assert(String(edited.json.supplier.phone).replace(/\D/g, '').endsWith('9123456780'));
+  const badSupplier = await req('POST', '/api/suppliers', { name: 'Bad Phone', phone: '12345' });
+  assert.strictEqual(badSupplier.status, 400);
+
+  const saltCmp = await req('GET', '/api/offers/compare?mode=salt&q=' + encodeURIComponent('Amoxicillin 500mg + Clavulanic Acid'));
+  assert.strictEqual(saltCmp.json.ok, true);
+  const augOffer = saltCmp.json.offers.find(row => row.id === 'off-s1-aug');
+  const moxOffer = saltCmp.json.offers.find(row => row.id === 'off-s4-mox');
+  assert(augOffer && moxOffer, 'Expected S1 Augmentin and S4 Moxikind offers');
+  assert.strictEqual(augOffer.net_buy_price, 145.45);
+  assert.strictEqual(augOffer.scheme_label, '10+1');
+  assert.strictEqual(moxOffer.net_buy_price, 98.33);
+  assert.strictEqual(moxOffer.scheme_label, '10+2');
+  assert.strictEqual(moxOffer.short_code, 'S4');
+  assert.strictEqual(moxOffer.best_margin, true);
+  assert(moxOffer.retail_margin_pct > augOffer.retail_margin_pct);
+
+  const brandCmp = await req('GET', '/api/offers/compare?mode=brand&q=Pan-D');
+  const pand = brandCmp.json.offers.filter(row => row.brand_name.includes('Pan-D'));
+  const s1 = pand.find(row => row.supplier_id === 'sup-1' && row.source === 'Manual Monthly Circular');
+  const s2 = pand.find(row => row.supplier_id === 'sup-2' && row.source === 'Manual Monthly Circular');
+  assert(s1 && s2);
+  assert(s2.net_buy_price < s1.net_buy_price);
+
+  const deal = await req('POST', '/api/offers/off-s4-mox/shortbook', { requestedStrips: 6 });
+  assert.strictEqual(deal.json.ok, true);
+  const booked = deal.json.data.shortbook.find(item => item.brand_name.includes('Moxikind-CV') && item.note && item.note.includes('S4'));
+  assert(booked, 'Order This Deal should land in the shortbook');
+  assert.strictEqual(Number(booked.last_ptr), 98.33);
+  assert.strictEqual(booked.last_scheme, '10+2');
+
+  const manualOffer = await req('POST', '/api/offers', {
+    supplierId: 'sup-3',
+    medicineId: 'med-6',
+    brandName: 'Dolo 650 Tablet',
+    saltComposition: 'Paracetamol 650mg',
+    buyPricePtr: 20,
+    mrp: 34,
+    schemeLabel: '5+1',
+    cashDiscountPct: 0,
+    source: 'Manual Monthly Circular'
+  });
+  assert.strictEqual(manualOffer.json.ok, true);
+  assert.strictEqual(manualOffer.json.offer.scheme_label, '5+1');
+  assert.strictEqual(manualOffer.json.offer.net_buy_price, 16.67);
+
+  const learned = manualOffer.json.data.offers.find(row => row.brand_name === 'Azithral 500 Tablet' && row.source === 'Auto-learned from Purchase Bill');
+  assert(learned, 'Saving a purchase bill should auto-learn a stockist offer');
+  assert.strictEqual(learned.scheme_label, '20+2');
+  assert.strictEqual(learned.buy_qty, 20);
+  assert.strictEqual(learned.free_qty, 2);
+  console.log('   OK -> Suppliers, S1–S4 scheme matrix, and 15-tablet FEFO.');
 
   console.log('8. Resetting database to clean initial demo state & verifying APK download...');
   await req('POST', '/api/reset-demo');

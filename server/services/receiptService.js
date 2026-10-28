@@ -14,24 +14,36 @@ function money(amount) {
   return '₹' + n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
-function buildCustomerReceipt({ storeName, city, sale, expiryDate }) {
-  const name = storeName || 'Akshay Medicose';
-  const lines = [
-    `*${name}*`,
-    'अक्षय मेडिकोज़, उज्जैन',
-    city || 'Ujjain (M.P.)',
-    '----------------',
-    `Date: ${sale.sold_at || ''}`,
-    `Medicine: ${sale.brand_name || ''}`,
-    `Batch: ${sale.batch_number || ''}`,
-    `Expiry: ${expiryDate || '—'}`,
-    `Qty: ${sale.strips_sold || 0} Strip / ${sale.loose_tablets_sold || 0} Loose Tablets`,
-    `पूरी पत्ती: ${sale.strips_sold || 0} | खुली गोली: ${sale.loose_tablets_sold || 0}`,
-    `Total Amount: ${money(sale.billed_amount)}`
-  ];
-  if (sale.patient_name) lines.splice(5, 0, `Customer: ${sale.patient_name}`);
-  if (sale.customer_phone) lines.splice(sale.patient_name ? 6 : 5, 0, `Mobile: ${sale.customer_phone}`);
-  lines.push('----------------', 'Thank you. धन्यवाद।');
+function buildCustomerReceipt({ storeName, city, sale, expiryDate, lang }) {
+  const hi = lang === 'hi';
+  const name = hi ? 'अक्षय मेडिकोज़' : (storeName || 'Akshay Medicose');
+  const place = hi ? 'उज्जैन' : (city || 'Ujjain (M.P.)');
+  const lines = hi
+    ? [
+      `*${name}*`,
+      place,
+      '----------------',
+      `तारीख: ${sale.sold_at || ''}`,
+      `दवा: ${sale.brand_name || ''}`,
+      `बैच: ${sale.batch_number || ''}`,
+      `समाप्ति: ${expiryDate || '—'}`,
+      `पूरी पत्ती: ${sale.strips_sold || 0} | खुली गोली: ${sale.loose_tablets_sold || 0}`,
+      `कुल राशि: ${money(sale.billed_amount)}`
+    ]
+    : [
+      `*${name}*`,
+      place,
+      '----------------',
+      `Date: ${sale.sold_at || ''}`,
+      `Medicine: ${sale.brand_name || ''}`,
+      `Batch: ${sale.batch_number || ''}`,
+      `Expiry: ${expiryDate || '—'}`,
+      `Qty: ${sale.strips_sold || 0} strips / ${sale.loose_tablets_sold || 0} loose tablets`,
+      `Total amount: ${money(sale.billed_amount)}`
+    ];
+  if (sale.patient_name) lines.splice(3, 0, (hi ? 'ग्राहक: ' : 'Customer: ') + sale.patient_name);
+  if (sale.customer_phone) lines.splice(sale.patient_name ? 4 : 3, 0, (hi ? 'मोबाइल: ' : 'Mobile: ') + sale.customer_phone);
+  lines.push('----------------', hi ? 'धन्यवाद।' : 'Thank you.');
   const text = lines.join('\n');
   const phone = sale.customer_phone ? String(sale.customer_phone).replace(/\D/g, '') : '';
   const whatsappUrl = phone.length === 10

@@ -4,6 +4,7 @@
     ['bills', 'navBills'],
     ['inventory', 'navInventory'],
     ['shortbook', 'navShortbook'],
+    ['schemes', 'navSchemes'],
     ['counter', 'navCounter'],
     ['credit', 'navCredit'],
     ['refills', 'navRefills'],
@@ -28,6 +29,9 @@
   let auditCounts = {};
   let shortQty = {};
   let expiryDraft = 60;
+  let schemeMode = 'salt';
+  let schemeQuery = '';
+  let refillFilter = 'due';
   const pos = {
     q: '', medicineId: '', strips: 1, loose: 0, pay: 'CASH',
     name: '', phone: '', doctor: '', schedule: false, interval: '30', customDays: 45
@@ -142,6 +146,24 @@
     document.getElementById('locBadge').textContent = t('location');
     const ownerBtn = document.getElementById('ownerBtn');
     ownerBtn.textContent = (owner ? t('ownerMode') : t('counterMode')) + (owner ? ' \u{1F513}' : ' \u{1F512}');
+    let tools = document.getElementById('ownerTools');
+    if (!tools) {
+      tools = document.createElement('span');
+      tools.id = 'ownerTools';
+      tools.style.display = 'inline-flex';
+      tools.style.gap = '8px';
+      document.querySelector('.top-actions').insertBefore(tools, ownerBtn);
+    }
+    tools.innerHTML = owner
+      ? '<button type="button" class="pill-btn" id="changePin">' + esc(t('changePin')) + '</button><button type="button" class="pill-btn" id="resetDemo">' + esc(t('resetDemo')) + '</button>'
+      : '';
+    const change = document.getElementById('changePin');
+    if (change) change.onclick = openChangePin;
+    const reset = document.getElementById('resetDemo');
+    if (reset) reset.onclick = () => {
+      if (!window.confirm(t('resetConfirm'))) return;
+      run(() => StoreEngine.resetDemo(), t('saved'));
+    };
     document.getElementById('apkBtn').textContent = t('getApp');
     document.getElementById('langEn').classList.toggle('on', lang === 'en');
     document.getElementById('langHi').classList.toggle('on', lang === 'hi');
@@ -220,10 +242,10 @@
   function dashboard() {
     const k = state.kpis || {};
     const value = owner
-      ? inr(k.totalPtrValue) + ' ' + t('ptr')
+      ? inr(k.totalPtrValue)
       : inr(k.totalMrpValue);
     const sub = owner
-      ? t('mrp') + ' ' + inr(k.totalMrpValue) + ' · ' + t('margin') + ' ' + (k.avgMarginPercent || 0) + '%'
+      ? t('ptr') + ' · ' + t('mrp') + ' ' + inr(k.totalMrpValue) + ' · ' + t('margin') + ' ' + (k.avgMarginPercent || 0) + '%'
       : t('mrp');
     const groups = state.whatsappReturnSummary || [];
     return '<div class="page-head"><div><h1>' + esc(t('navDashboard')) + '</h1><p class="lede">' + esc(state.settings.city || '') + '</p></div>' +
@@ -231,7 +253,7 @@
       '<span class="row"><input id="expiryDays" type="number" min="5" max="365" value="' + esc(expiryDraft) + '"><button type="button" class="btn small" id="applyExpiry">' + esc(t('apply')) + '</button></span></label></div>' +
       '<section class="kpis">' +
         kpi(t('kpiBatches'), k.totalActiveBatches || 0, '') +
-        kpi(t('kpiValue'), value, sub) +
+        kpi(t('kpiValue'), value, sub + (owner ? ' · ' + t('ptrHint') : '')) +
         kpi(t('kpiExpiring'), k.expiringCount || 0, (k.expiringCount || 0) + ' · ' + (state.settings.expiry_alert_days || 60) + ' ' + t('days')) +
         kpi(t('kpiShortbook'), k.shortbookCount || 0, '') +
         kpi(t('kpiCredit'), inr(k.pendingCreditBalance), '') +
@@ -297,20 +319,40 @@
         rows.map(inv => '<tr><td>' + esc(inv.invoice_number) + '</td><td>' + esc(inv.supplier_name) + '</td><td>' + esc(pretty(inv.invoice_date)) + '</td><td class="num">' + inr(inv.total_amount) + '</td><td>' + payPill(inv.payment_status) + '</td><td><button type="button" class="btn small" data-invoice="' + esc(inv.id) + '">' + esc(t('open')) + '</button></td></tr>').join('') +
         '</tbody></table></div>' : '<div class="empty">' + esc(t('noBills')) + '</div>') +
       '</section><section class="panel"><h2>' + esc(t('addBill')) + '</h2>' +
+      '<p class="lede">' + esc(t('ptrHint')) + '</p>' +
       '<div class="actions" style="margin-bottom:10px">' +
-        templates.map(id => '<button type="button" class="btn small" data-template="' + esc(id) + '">' + esc(t('sample')) + '</button>').join('') +
+        '<button type="button" class="btn small" id="manageSuppliers">' + esc(t('manageSuppliers')) + '</button>' +
+        templates.map(id => '<button type="button" class="btn small" data-template="' + esc(id) + '">' + esc(t(sampleLabel(id))) + '</button>').join('') +
+        '<button type="button" class="btn small" id="blankBill">' + esc(t('blankBill')) + '</button>' +
         '<label class="btn small">' + esc(t('upload')) + '<input id="billFile" type="file" accept="image/*" capture="environment" hidden></label></div>' +
       draftForm() +
       '</section></div>';
   }
 
+  function sampleLabel(id) {
+    if (id === 'tpl-mahakal') return 'sampleMahakal';
+    if (id === 'tpl-malwa') return 'sampleMalwa';
+    if (id === 'tpl-shipra') return 'sampleShipra';
+    return 'sample';
+  }
+
+  function blankItem() {
+    return { brandName: '', saltComposition: '', batchNumber: '', expiryDate: '', stripsCount: 1, freeStrips: 0, schemeLabel: '', rackLocation: 'Rack A-1', ptrPerStrip: 0, mrpPerStrip: 0, packSizeUnits: 10, gstPercent: 12 };
+  }
+
   function draftForm() {
     if (!draft) return '<p class="muted">' + esc(t('sample')) + ' / ' + esc(t('upload')) + '</p>';
     const items = draft.items || [];
+    const pay = draft.paymentStatus || 'CREDIT';
     return '<div class="toolbar"><label class="field grow"><span>' + esc(t('supplier')) + '</span><input id="dSupplier" value="' + esc(draft.supplierName || '') + '"></label>' +
       '<label class="field"><span>' + esc(t('invoice')) + '</span><input id="dInv" value="' + esc(draft.invoiceNumber || '') + '"></label>' +
-      '<label class="field"><span>' + esc(t('date')) + '</span><input id="dDate" type="date" value="' + esc(draft.invoiceDate || '') + '"></label></div>' +
-      '<div class="table-wrap"><table class="data draft-table"><thead><tr><th>' + esc(t('brand')) + '</th><th>' + esc(t('batch')) + '</th><th>' + esc(t('expiry')) + '</th><th>' + esc(t('strips')) + '</th><th>' + esc(t('free')) + '</th><th>' + esc(t('scheme')) + '</th><th>' + esc(t('rack')) + '</th><th class="owner-only">' + esc(t('ptr')) + '</th><th>' + esc(t('mrp')) + '</th></tr></thead><tbody>' +
+      '<label class="field"><span>' + esc(t('date')) + '</span><input id="dDate" type="date" value="' + esc(draft.invoiceDate || '') + '"></label>' +
+      '<label class="field"><span>' + esc(t('paymentStatus')) + '</span><select id="dPay">' +
+        '<option value="CREDIT"' + (pay === 'CREDIT' ? ' selected' : '') + '>' + esc(t('creditPending')) + '</option>' +
+        '<option value="PAID"' + (pay === 'PAID' ? ' selected' : '') + '>' + esc(t('paid')) + '</option>' +
+        '<option value="PARTIAL"' + (pay === 'PARTIAL' ? ' selected' : '') + '>' + esc(t('partial')) + '</option></select></label></div>' +
+      '<p class="muted">' + esc(t('ptrHint')) + '</p>' +
+      '<div class="table-wrap"><table class="data draft-table"><thead><tr><th>' + esc(t('brand')) + '</th><th>' + esc(t('batch')) + '</th><th>' + esc(t('expiry')) + '</th><th>' + esc(t('strips')) + '</th><th>' + esc(t('free')) + '</th><th>' + esc(t('scheme')) + '</th><th>' + esc(t('rack')) + '</th><th class="owner-only" title="' + esc(t('ptrHint')) + '">' + esc(t('ptr')) + '</th><th>' + esc(t('mrp')) + '</th><th></th></tr></thead><tbody>' +
       items.map((it, i) => '<tr>' +
         '<td><input data-di="' + i + '" data-k="brandName" value="' + esc(it.brandName || '') + '"></td>' +
         '<td><input data-di="' + i + '" data-k="batchNumber" value="' + esc(it.batchNumber || '') + '"></td>' +
@@ -320,9 +362,10 @@
         '<td><input data-di="' + i + '" data-k="schemeLabel" value="' + esc(it.schemeLabel || ((it.freeStrips > 0) ? (it.stripsCount + '+' + it.freeStrips) : '')) + '"></td>' +
         '<td><input data-di="' + i + '" data-k="rackLocation" value="' + esc(it.rackLocation || '') + '"></td>' +
         '<td class="owner-only"><input data-di="' + i + '" data-k="ptrPerStrip" type="number" step="0.01" value="' + esc(it.ptrPerStrip || 0) + '"></td>' +
-        '<td><input data-di="' + i + '" data-k="mrpPerStrip" type="number" step="0.01" value="' + esc(it.mrpPerStrip || 0) + '"></td></tr>').join('') +
+        '<td><input data-di="' + i + '" data-k="mrpPerStrip" type="number" step="0.01" value="' + esc(it.mrpPerStrip || 0) + '"></td>' +
+        '<td><button type="button" class="btn small danger" data-delrow="' + i + '">' + esc(t('deleteRow')) + '</button></td></tr>').join('') +
       '</tbody></table></div>' +
-      '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary" id="saveBill">' + esc(t('saveBill')) + '</button></div>';
+      '<div class="actions" style="margin-top:10px"><button type="button" class="btn" id="addRow">' + esc(t('addRow')) + '</button><button type="button" class="btn primary" id="saveBill">' + esc(t('saveBill')) + '</button></div>';
   }
 
   function invoiceItems(id) {
@@ -343,10 +386,14 @@
       '<div class="table-wrap"><table class="data"><thead><tr><th>' + esc(t('brand')) + '</th><th>' + esc(t('strips')) + '</th><th>' + esc(t('free')) + '</th><th>' + esc(t('scheme')) + '</th><th class="owner-only">' + esc(t('ptr')) + '</th><th>' + esc(t('mrp')) + '</th><th>' + esc(t('rack')) + '</th></tr></thead><tbody>' +
       items.map(li => '<tr><td>' + esc(li.brand_name) + '</td><td>' + esc(li.strips_qty) + '</td><td>' + esc(li.free_strips_qty) + '</td><td>' + esc(li.scheme_label || '—') + '</td><td class="owner-only num">' + inr(li.ptr_per_strip) + '</td><td class="num">' + inr(li.mrp_per_strip) + '</td><td>' + esc(li.rack_location || '') + '</td></tr>').join('') +
       '</tbody></table></div>' +
-      '<div class="toolbar" style="margin-top:10px"><label class="field grow"><span>' + esc(t('paymentRef')) + '</span><input id="payRef" placeholder="' + esc(t('paymentRef')) + '"></label>' +
-      '<button type="button" class="btn green" id="markPaid">' + esc(t('markPaid')) + '</button></div></div></div>'
+      (inv.payment_status === 'PAID'
+        ? '<div style="margin-top:10px"><span class="pill ok">' + esc(t('paid')) + '</span> <span class="pill info">' + esc(t('paidRef')) + ': ' + esc(inv.payment_reference || '—') + '</span></div>'
+        : '<div class="toolbar" style="margin-top:10px"><label class="field grow"><span>' + esc(t('paymentRef')) + '</span><input id="payRef" placeholder="' + esc(t('paymentRef')) + '"></label>' +
+          '<button type="button" class="btn green" id="markPaid">' + esc(t('markPaid')) + '</button></div>') +
+      '</div></div>'
     );
-    document.getElementById('markPaid').onclick = () => {
+    const mark = document.getElementById('markPaid');
+    if (mark) mark.onclick = () => {
       const paymentReference = document.getElementById('payRef').value;
       closeModal();
       run(() => StoreEngine.setInvoicePayment(id, { paymentStatus: 'PAID', paymentReference }), t('saved'));
@@ -446,7 +493,8 @@
     });
     const cards = Object.values(groups);
     const supplierOpts = '<option value="">' + esc(t('unassigned')) + '</option>' + (state.suppliers || []).map(s => '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>').join('');
-    return '<div class="page-head"><div><h1>' + esc(t('navShortbook')) + '</h1><p class="lede">' + esc(t('shortAdd')) + '</p></div></div>' +
+    return '<div class="page-head"><div><h1>' + esc(t('navShortbook')) + '</h1><p class="lede">' + esc(t('shortAdd')) + '</p></div>' +
+      '<button type="button" class="btn" id="manageSuppliers">' + esc(t('manageSuppliers')) + '</button></div>' +
       '<section class="panel"><div class="toolbar"><label class="field grow"><span>' + esc(t('brand')) + '</span><input id="sbName"></label>' +
       '<label class="field" style="width:90px"><span>' + esc(t('qty')) + '</span><input id="sbQty" type="number" value="1" min="1"></label>' +
       '<label class="field"><span>' + esc(t('supplier')) + '</span><select id="sbSup">' + supplierOpts + '</select></label>' +
@@ -501,6 +549,7 @@
       (shown ? rackCard(shown, batch) : '') +
       '<div class="toolbar"><div class="field"><span>' + esc(t('strips')) + '</span><span class="stepper"><button type="button" id="posStripMinus">−</button><b id="posStrips">' + pos.strips + '</b><button type="button" id="posStripPlus">+</button></span></div>' +
       '<div class="field"><span>' + esc(t('loose')) + '</span><span class="stepper"><button type="button" id="posLooseMinus">−</button><b id="posLoose">' + pos.loose + '</b><button type="button" id="posLoosePlus">+</button></span></div></div>' +
+      salePreview(shown, batch) +
       '<div class="seg" id="paySeg" style="margin:8px 0">' +
         ['CASH', 'UPI', 'CREDIT'].map(mode => '<button type="button" data-pay="' + mode + '" class="' + (pos.pay === mode ? 'on' : '') + '">' + esc(mode === 'CASH' ? t('cash') : mode === 'UPI' ? t('upi') : t('creditAccount')) + '</button>').join('') +
       '</div>' +
@@ -513,6 +562,18 @@
         (pos.interval === 'custom' ? '<label class="field" style="width:90px"><span>' + esc(t('days')) + '</span><input id="posCustom" type="number" min="1" value="' + esc(pos.customDays) + '"></label>' : '') : '') +
       '</div><button type="button" class="btn primary" id="posCharge">' + esc(t('charge')) + '</button></section>' +
       '<section class="panel"><h2>' + esc(t('recent')) + '</h2>' + recentSales() + '</section></div>';
+  }
+
+  function salePreview(med, batch) {
+    if (!med) return '';
+    const pack = (batch && batch.pack_size_units) || med.pack_size_units || 10;
+    const rate = batch ? Number(batch.mrp_per_strip) || 0 : 0;
+    const units = (pos.strips * pack) + pos.loose;
+    const total = pack > 0 ? (units / pack) * rate : 0;
+    return '<div class="panel" id="salePreview" style="margin:8px 0"><div class="kpi-label">' + esc(t('estimatedTotal')) + '</div>' +
+      '<div class="kpi-value">' + inr(total) + '</div>' +
+      '<div class="muted">' + esc(t('unitBreakdown')) + ': ' + pos.strips + ' ' + esc(t('stripsUnit')) + ' + ' + pos.loose + ' ' + esc(t('looseUnit')) +
+      ' · ' + units + ' @ ' + pack + '/' + esc(t('pack')) + '</div></div>';
   }
 
   function recentSales() {
@@ -569,9 +630,21 @@
   }
 
   function refills() {
-    const rows = state.refills || [];
-    if (!rows.length) return '<div class="page-head"><h1>' + esc(t('navRefills')) + '</h1></div><div class="empty">' + esc(t('emptyRefill')) + '</div>';
-    return '<div class="page-head"><div><h1>' + esc(t('navRefills')) + '</h1><p class="lede">' + esc(t('refillLead')) + '</p></div></div><div class="cards">' +
+    const all = state.refills || [];
+    const rows = refillFilter === 'due' ? all.filter(row => row.due_soon) : all;
+    const meds = state.medicines || [];
+    const head = '<div class="page-head"><div><h1>' + esc(t('navRefills')) + '</h1><p class="lede">' + esc(t('refillLead')) + '</p></div></div>' +
+      '<div class="seg" id="refillFilter" style="margin-bottom:10px"><button type="button" data-rfilter="due" class="' + (refillFilter === 'due' ? 'on' : '') + '">' + esc(t('dueSoonFilter')) + '</button>' +
+      '<button type="button" data-rfilter="all" class="' + (refillFilter === 'all' ? 'on' : '') + '">' + esc(t('allSchedules')) + '</button></div>' +
+      '<section class="panel"><h2>' + esc(t('addRefill')) + '</h2><div class="toolbar">' +
+      '<label class="field"><span>' + esc(t('patient')) + '</span><input id="rfName"></label>' +
+      '<label class="field"><span>' + esc(t('phone')) + '</span><input id="rfPhone" inputmode="numeric"></label>' +
+      '<label class="field grow"><span>' + esc(t('brand')) + '</span><select id="rfMed">' + meds.map(m => '<option value="' + esc(m.id) + '">' + esc(m.brand_name) + '</option>').join('') + '</select></label>' +
+      '<label class="field" style="width:80px"><span>' + esc(t('strips')) + '</span><input id="rfStrips" type="number" min="1" value="1"></label>' +
+      '<label class="field"><span>' + esc(t('interval')) + '</span><select id="rfEvery"><option value="30">' + esc(t('days30')) + '</option><option value="15">' + esc(t('days15')) + '</option></select></label>' +
+      '<button type="button" class="btn primary" id="rfAdd">' + esc(t('add')) + '</button></div></section>';
+    if (!rows.length) return head + '<div class="empty">' + esc(t('emptyRefill')) + '</div>';
+    return head + '<div class="cards">' +
       rows.map(row => {
         const due = row.due_soon;
         return '<article class="refill-card' + (due ? ' due' : '') + '"><header><div><b>' + esc(row.patient_name) + '</b><div class="muted">' + esc(row.phone) + '</div></div>' +
@@ -589,14 +662,42 @@
   }
 
   function alertText(row) {
+    if (lang === 'hi') {
+      return [
+        'नमस्ते ' + row.patient_name + ',',
+        'आपकी ' + row.brand_name + ' की मासिक दवा (' + row.strips_qty + ' पट्टी) ' + pretty(row.next_due_date) + ' को देय है। कृपया अक्षय मेडिकोज़, उज्जैन आइए या व्हाट्सऐप पर पुष्टि करें।',
+        state.settings.phone || ''
+      ].join('\n');
+    }
     return [
       state.settings.store_name,
       state.settings.city,
-      row.patient_name,
-      row.brand_name + ' · ' + row.strips_qty + ' ' + t('stripsUnit'),
-      t('nextDue') + ': ' + pretty(row.next_due_date),
-      state.settings.phone
+      'Hello ' + row.patient_name + ', your monthly refill of ' + row.brand_name + ' (' + row.strips_qty + ' strip' + (Number(row.strips_qty) === 1 ? '' : 's') + ') is due on ' + pretty(row.next_due_date) + '. Please visit ' + state.settings.store_name + ', ' + state.settings.city + ', or reply on WhatsApp to confirm.'
     ].join('\n');
+  }
+
+  function schemes() {
+    const offers = (state.offers || []).filter(row => {
+      const q = schemeQuery.trim().toLowerCase();
+      if (!q) return true;
+      if (schemeMode === 'brand') return String(row.brand_name || '').toLowerCase().includes(q);
+      return String(row.salt_composition || '').toLowerCase().includes(q);
+    });
+    const salts = Array.from(new Set((state.offers || []).map(row => row.salt_composition).filter(Boolean)));
+    const brands = Array.from(new Set((state.offers || []).map(row => row.brand_name).filter(Boolean)));
+    const choices = schemeMode === 'brand' ? brands : salts;
+    return '<div class="page-head"><div><h1>' + esc(t('navSchemes')) + '</h1><p class="lede">' + esc(t('schemesLead')) + '</p></div>' +
+      '<div class="actions"><button type="button" class="btn" id="manageSuppliers">' + esc(t('manageSuppliers')) + '</button>' +
+      '<button type="button" class="btn primary" id="addOffer">' + esc(t('addOffer')) + '</button></div></div>' +
+      '<div class="seg" id="schemeMode" style="margin-bottom:10px"><button type="button" data-smode="salt" class="' + (schemeMode === 'salt' ? 'on' : '') + '">' + esc(t('compareSalt')) + '</button>' +
+      '<button type="button" data-smode="brand" class="' + (schemeMode === 'brand' ? 'on' : '') + '">' + esc(t('compareBrand')) + '</button></div>' +
+      '<div class="toolbar"><label class="field grow"><span>' + esc(schemeMode === 'brand' ? t('brand') : t('salt')) + '</span>' +
+      '<input id="schemeQ" list="schemeChoices" value="' + esc(schemeQuery) + '" placeholder="' + esc(schemeMode === 'brand' ? 'Pan-D' : 'Amoxicillin') + '"></label>' +
+      '<datalist id="schemeChoices">' + choices.map(name => '<option value="' + esc(name) + '"></option>').join('') + '</datalist></div>' +
+      '<p class="muted">' + esc(t('ptrHint')) + '</p>' +
+      (offers.length ? '<div class="table-wrap panel"><table class="data"><thead><tr><th>' + esc(t('shortCode')) + '</th><th>' + esc(t('supplier')) + '</th><th>' + esc(t('brand')) + '</th><th>' + esc(t('salt')) + '</th><th title="' + esc(t('ptrHint')) + '">' + esc(t('ptr')) + '</th><th>' + esc(t('mrp')) + '</th><th>' + esc(t('scheme')) + '</th><th>' + esc(t('cashDiscount')) + '</th><th>' + esc(t('netBuy')) + '</th><th>' + esc(t('margin')) + '</th><th>' + esc(t('validUntil')) + '</th><th></th></tr></thead><tbody>' +
+        offers.map(row => '<tr class="' + (row.best_margin ? 'best-deal' : '') + '"><td><b>' + esc(row.short_code || '') + '</b></td><td>' + esc(row.supplier_name || '') + '</td><td>' + esc(row.brand_name) + '</td><td>' + esc(row.salt_composition) + '</td><td class="num">' + inr(row.buy_price_ptr) + '</td><td class="num">' + inr(row.mrp) + '</td><td>' + esc(row.scheme_label || t('noScheme')) + '</td><td>' + esc(row.cash_discount_pct || 0) + '%</td><td class="num">' + inr(row.net_buy_price) + '</td><td>' + Number(row.retail_margin_pct || 0).toFixed(0) + '%' + (row.best_margin ? ' <span class="pill ok">' + esc(t('bestDeal')) + '</span>' : '') + '</td><td>' + esc(pretty(row.valid_until)) + '<div class="muted">' + esc(row.source || '') + '</div></td><td><button type="button" class="btn small primary" data-deal="' + esc(row.id) + '">' + esc(t('orderDeal')) + '</button></td></tr>').join('') +
+      '</tbody></table></div>' : '<div class="empty">' + esc(t('noMatch')) + '</div>');
   }
 
   function audit() {
@@ -628,7 +729,7 @@
     paintChrome();
     const root = document.getElementById('app');
     const body = {
-      dashboard, bills, inventory, shortbook, counter, credit, refills, audit
+      dashboard, bills, inventory, shortbook, schemes, counter, credit, refills, audit
     }[view] || dashboard;
     root.innerHTML = body();
     bind();
@@ -660,6 +761,9 @@
       draft = await StoreEngine.parseBill({ templateId: btn.getAttribute('data-template') });
       return null;
     }));
+    const blank = document.getElementById('blankBill');
+    if (blank) blank.onclick = () => { draft = { supplierName: '', invoiceNumber: '', invoiceDate: '2026-10-27', paymentStatus: 'CREDIT', items: [blankItem()] }; render(); };
+    document.querySelectorAll('#manageSuppliers').forEach(btn => btn.onclick = openSuppliers);
     const billFile = document.getElementById('billFile');
     if (billFile) billFile.onchange = async () => {
       const file = billFile.files && billFile.files[0];
@@ -677,6 +781,15 @@
       dSupplier.oninput = () => { draft.supplierName = dSupplier.value; };
       document.getElementById('dInv').oninput = (e) => { draft.invoiceNumber = e.target.value; };
       document.getElementById('dDate').onchange = (e) => { draft.invoiceDate = e.target.value; };
+      const dPay = document.getElementById('dPay');
+      if (dPay) dPay.onchange = (e) => { draft.paymentStatus = e.target.value; };
+      const addRow = document.getElementById('addRow');
+      if (addRow) addRow.onclick = () => { draft.items.push(blankItem()); render(); };
+      document.querySelectorAll('[data-delrow]').forEach(btn => btn.onclick = () => {
+        draft.items.splice(parseInt(btn.getAttribute('data-delrow'), 10), 1);
+        if (!draft.items.length) draft.items.push(blankItem());
+        render();
+      });
       document.getElementById('saveBill').onclick = () => run(async () => {
         const saved = await StoreEngine.saveInvoice(draft);
         draft = null;
@@ -698,7 +811,7 @@
       supplierId: document.getElementById('sbSup').value,
       note: document.getElementById('sbNote').value
     }), t('saved'));
-    document.querySelectorAll('[data-sbqty]').forEach(input => input.onchange = () => { shortQty[input.getAttribute('data-sbqty')] = input.value; });
+    document.querySelectorAll('[data-sbqty]').forEach(input => input.oninput = () => { shortQty[input.getAttribute('data-sbqty')] = input.value; });
     document.querySelectorAll('[data-order]').forEach(btn => btn.onclick = () => {
       const pack = orderText(btn.getAttribute('data-order'));
       window.open(wa(pack.phone, pack.text), '_blank');
@@ -717,6 +830,8 @@
     });
     bindCounter();
     bindCredit();
+    bindSchemes();
+    bindRefills();
     document.querySelectorAll('[data-alert]').forEach(btn => btn.onclick = () => {
       const row = (state.refills || []).find(r => r.id === btn.getAttribute('data-alert'));
       window.open(wa(row.phone, alertText(row)), '_blank');
@@ -817,6 +932,38 @@
     }
   }
 
+  function bindSchemes() {
+    document.querySelectorAll('[data-smode]').forEach(btn => btn.onclick = () => {
+      schemeMode = btn.getAttribute('data-smode');
+      schemeQuery = '';
+      render();
+    });
+    const q = document.getElementById('schemeQ');
+    if (q) q.oninput = () => { schemeQuery = q.value; render(); const el = document.getElementById('schemeQ'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } };
+    const add = document.getElementById('addOffer');
+    if (add) add.onclick = openOfferForm;
+    document.querySelectorAll('[data-deal]').forEach(btn => btn.onclick = () => {
+      run(async () => {
+        const next = await StoreEngine.orderOffer(btn.getAttribute('data-deal'), { requestedStrips: 1 });
+        view = 'shortbook';
+        return next;
+      }, t('saved'));
+    });
+  }
+
+  function bindRefills() {
+    document.querySelectorAll('[data-rfilter]').forEach(btn => btn.onclick = () => { refillFilter = btn.getAttribute('data-rfilter'); render(); });
+    const add = document.getElementById('rfAdd');
+    if (!add) return;
+    add.onclick = () => run(() => StoreEngine.createRefill({
+      patientName: document.getElementById('rfName').value,
+      phone: document.getElementById('rfPhone').value,
+      medicineId: document.getElementById('rfMed').value,
+      stripsQty: document.getElementById('rfStrips').value,
+      intervalDays: document.getElementById('rfEvery').value
+    }), t('saved'));
+  }
+
   function bindCredit() {
     let payMode = 'CASH';
     document.querySelectorAll('[data-cus]').forEach(row => row.onclick = () => { creditId = row.getAttribute('data-cus'); render(); });
@@ -841,9 +988,14 @@
   }
 
   function speakInto(input, assign) {
-    if (!window.VoiceInput) return;
+    if (!window.VoiceInput || !VoiceInput.supported()) {
+      toast(t('voiceUnsupported'));
+      return;
+    }
+    toast(t('voiceListening'));
     VoiceInput.start(lang === 'hi' ? 'hi-IN' : 'en-IN', {
-      onFinal: (text) => { assign(text); input.value = text; render(); }
+      onFinal: (text) => { assign(text); input.value = text; render(); },
+      onError: () => toast(t('voiceUnsupported'))
     });
   }
 
@@ -856,6 +1008,127 @@
     });
   }
 
+  function openChangePin() {
+    openModal(
+      '<h2 style="margin-top:0">' + esc(t('changePin')) + '</h2>' +
+      '<label class="field"><span>' + esc(t('newPin')) + '</span><input id="pinInput" type="password" inputmode="numeric" maxlength="4" autocomplete="off"></label>' +
+      '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary" id="pinGo">' + esc(t('saveSupplier')) + '</button><button type="button" class="btn" id="modalClose">' + esc(t('cancel')) + '</button></div>' +
+      '<p id="pinErr" class="muted"></p>'
+    );
+    const pinInput = document.getElementById('pinInput');
+    pinInput.focus();
+    const submit = () => {
+      const pin = pinInput.value.trim();
+      if (!/^\d{4}$/.test(pin)) {
+        document.getElementById('pinErr').textContent = t('wrongPin');
+        return;
+      }
+      closeModal();
+      run(() => StoreEngine.updateSettings({ owner_pin: pin }), t('saved'));
+    };
+    pinInput.onkeydown = (event) => { if (event.key === 'Enter') submit(); };
+    document.getElementById('pinGo').onclick = submit;
+  }
+
+  function openSuppliers() {
+    const rows = state.suppliers || [];
+    openModal(
+      '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px"><h2 style="margin:0">' + esc(t('manageSuppliers')) + '</h2><button type="button" class="btn small" id="modalClose">' + esc(t('close')) + '</button></div>' +
+      '<div class="table-wrap"><table class="data"><thead><tr><th>' + esc(t('shortCode')) + '</th><th>' + esc(t('supplier')) + '</th><th>' + esc(t('phone')) + '</th><th></th></tr></thead><tbody>' +
+      rows.map(s => '<tr><td>' + esc(s.short_code || '') + '</td><td>' + esc(s.name) + '</td><td>' + esc(s.phone) + '</td><td><button type="button" class="btn small" data-edit-sup="' + esc(s.id) + '">' + esc(t('editSupplier')) + '</button></td></tr>').join('') +
+      '</tbody></table></div><h2>' + esc(t('addSupplier')) + '</h2>' + supplierFields('new') +
+      '<button type="button" class="btn primary" id="saveNewSup">' + esc(t('saveSupplier')) + '</button>'
+    );
+    document.getElementById('saveNewSup').onclick = () => run(async () => {
+      const next = await StoreEngine.saveSupplier(readSupplierForm('new'));
+      closeModal();
+      return next;
+    }, t('saved'));
+    document.querySelectorAll('[data-edit-sup]').forEach(btn => btn.onclick = () => {
+      const sup = (state.suppliers || []).find(s => s.id === btn.getAttribute('data-edit-sup'));
+      if (sup) openSupplierEdit(sup);
+    });
+  }
+
+  function supplierFields(prefix, sup) {
+    sup = sup || {};
+    return '<div class="toolbar">' +
+      '<label class="field grow"><span>' + esc(t('supplier')) + '</span><input id="' + prefix + 'Name" value="' + esc(sup.name || '') + '"></label>' +
+      '<label class="field"><span>' + esc(t('shortCode')) + '</span><input id="' + prefix + 'Code" value="' + esc(sup.short_code || '') + '" placeholder="S1"></label>' +
+      '<label class="field"><span>' + esc(t('phone')) + '</span><input id="' + prefix + 'Phone" value="' + esc(sup.phone || '') + '" inputmode="numeric"></label>' +
+      '<label class="field"><span>GSTIN</span><input id="' + prefix + 'Gst" value="' + esc(sup.gstin || '') + '"></label>' +
+      '<label class="field grow"><span>' + esc(t('location')) + '</span><input id="' + prefix + 'Addr" value="' + esc(sup.address || '') + '" placeholder="Freeganj, Ujjain"></label>' +
+      '<label class="field"><span>' + esc(t('creditDays')) + '</span><input id="' + prefix + 'Days" type="number" value="' + esc(sup.credit_days != null ? sup.credit_days : 21) + '"></label>' +
+      '<label class="field"><span>' + esc(t('cashDiscount')) + '</span><input id="' + prefix + 'Disc" type="number" step="0.1" value="' + esc(sup.cash_discount_pct || 0) + '"></label></div>';
+  }
+
+  function readSupplierForm(prefix) {
+    return {
+      name: document.getElementById(prefix + 'Name').value,
+      shortCode: document.getElementById(prefix + 'Code').value,
+      phone: document.getElementById(prefix + 'Phone').value,
+      gstin: document.getElementById(prefix + 'Gst').value,
+      address: document.getElementById(prefix + 'Addr').value,
+      creditDays: document.getElementById(prefix + 'Days').value,
+      cashDiscountPct: document.getElementById(prefix + 'Disc').value
+    };
+  }
+
+  function openSupplierEdit(sup) {
+    openModal(
+      '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><h2 style="margin:0">' + esc(t('editSupplier')) + '</h2><button type="button" class="btn small" id="modalClose">' + esc(t('close')) + '</button></div>' +
+      supplierFields('edit', sup) +
+      '<button type="button" class="btn primary" id="saveEditSup">' + esc(t('saveSupplier')) + '</button>'
+    );
+    document.getElementById('saveEditSup').onclick = () => run(async () => {
+      const next = await StoreEngine.saveSupplier(readSupplierForm('edit'), sup.id);
+      closeModal();
+      return next;
+    }, t('saved'));
+  }
+
+  function openOfferForm() {
+    const suppliers = state.suppliers || [];
+    const meds = state.medicines || [];
+    openModal(
+      '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><h2 style="margin:0">' + esc(t('addOffer')) + '</h2><button type="button" class="btn small" id="modalClose">' + esc(t('close')) + '</button></div>' +
+      '<div class="toolbar"><label class="field"><span>' + esc(t('supplier')) + '</span><select id="ofSup">' + suppliers.map(s => '<option value="' + esc(s.id) + '">' + esc((s.short_code || '') + ' ' + s.name) + '</option>').join('') + '</select></label>' +
+      '<label class="field grow"><span>' + esc(t('brand')) + '</span><select id="ofMed"><option value=""></option>' + meds.map(m => '<option value="' + esc(m.id) + '">' + esc(m.brand_name) + '</option>').join('') + '</select></label>' +
+      '<label class="field grow"><span>' + esc(t('brand')) + '</span><input id="ofBrand"></label>' +
+      '<label class="field grow"><span>' + esc(t('salt')) + '</span><input id="ofSalt"></label></div>' +
+      '<div class="toolbar"><label class="field"><span>' + esc(t('ptr')) + '</span><input id="ofPtr" type="number" step="0.01" value="100"></label>' +
+      '<label class="field"><span>' + esc(t('mrp')) + '</span><input id="ofMrp" type="number" step="0.01" value="140"></label>' +
+      '<label class="field"><span>' + esc(t('scheme')) + '</span><input id="ofScheme" value="10+1" placeholder="10+2"></label>' +
+      '<label class="field"><span>' + esc(t('cashDiscount')) + '</span><input id="ofDisc" type="number" step="0.1" value="0"></label>' +
+      '<label class="field"><span>' + esc(t('validUntil')) + '</span><input id="ofUntil" type="date" value="2026-11-26"></label></div>' +
+      '<p class="muted">' + esc(t('ptrHint')) + '</p>' +
+      '<button type="button" class="btn primary" id="saveOffer">' + esc(t('add')) + '</button>'
+    );
+    document.getElementById('ofMed').onchange = () => {
+      const med = findMed(document.getElementById('ofMed').value);
+      if (!med) return;
+      document.getElementById('ofBrand').value = med.brand_name;
+      document.getElementById('ofSalt').value = med.salt_composition;
+    };
+    document.getElementById('saveOffer').onclick = () => run(async () => {
+      const med = findMed(document.getElementById('ofMed').value);
+      const next = await StoreEngine.saveOffer({
+        supplierId: document.getElementById('ofSup').value,
+        medicineId: med ? med.id : '',
+        brandName: document.getElementById('ofBrand').value || (med ? med.brand_name : ''),
+        saltComposition: document.getElementById('ofSalt').value || (med ? med.salt_composition : ''),
+        buyPricePtr: document.getElementById('ofPtr').value,
+        mrp: document.getElementById('ofMrp').value,
+        schemeLabel: document.getElementById('ofScheme').value,
+        cashDiscountPct: document.getElementById('ofDisc').value,
+        validUntil: document.getElementById('ofUntil').value,
+        source: 'Manual Monthly Circular'
+      });
+      closeModal();
+      return next;
+    }, t('saved'));
+  }
+
   function openPin() {
     openModal(
       '<h2 style="margin-top:0">' + esc(t('pinTitle')) + '</h2><p class="muted">' + esc(t('pinHint')) + '</p>' +
@@ -863,6 +1136,9 @@
       '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary" id="pinGo">' + esc(t('unlock')) + '</button><button type="button" class="btn" id="modalClose">' + esc(t('cancel')) + '</button></div>' +
       '<p id="pinErr" class="muted"></p>'
     );
+    const pinInput = document.getElementById('pinInput');
+    pinInput.focus();
+    pinInput.onkeydown = (event) => { if (event.key === 'Enter') document.getElementById('pinGo').click(); };
     document.getElementById('pinGo').onclick = () => {
       const pin = document.getElementById('pinInput').value.trim();
       if (pin === String(state.settings.owner_pin || '1234')) {
@@ -928,7 +1204,7 @@
       if (mode === 'custom') paint(document.getElementById('qrCustom').value || current);
       else paint(urls[mode]);
     };
-    document.getElementById('qrCustom').onchange = (e) => { if (e.target.value) paint(e.target.value.trim()); };
+    document.getElementById('qrCustom').oninput = (e) => { if (e.target.value) paint(e.target.value.trim()); };
     document.getElementById('qrCopy').onclick = () => copyText(current);
     paint(current);
   }

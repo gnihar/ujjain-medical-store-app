@@ -205,6 +205,88 @@
     return digits;
   }
 
+  function round2(n) {
+    return Number((Number(n) || 0).toFixed(2));
+  }
+
+  function netBuyPrice(ptr, buyQty, freeQty, discountPct) {
+    const buy = Math.max(0, parseInt(buyQty, 10) || 0);
+    const free = Math.max(0, parseInt(freeQty, 10) || 0);
+    const denom = buy + free;
+    if (!denom) return round2(ptr);
+    return round2((Number(ptr) || 0) * (1 - (Number(discountPct) || 0) / 100) * buy / denom);
+  }
+
+  function schemeParts(label, paid, freeQty) {
+    const raw = String(label || '').trim();
+    const matched = raw.match(/(\d+)\s*\+\s*(\d+)/);
+    if (matched) return { label: matched[1] + '+' + matched[2], buy: parseInt(matched[1], 10), free: parseInt(matched[2], 10) };
+    const paidN = Math.max(0, parseInt(paid, 10) || 0);
+    const free = Math.max(0, parseInt(freeQty, 10) || 0);
+    if (free > 0 && paidN > 0) return { label: paidN + '+' + free, buy: paidN, free: free };
+    return { label: 'No Scheme', buy: Math.max(1, paidN || 1), free: 0 };
+  }
+
+  function demoOffers() {
+    const rows = [
+      ['off-s1-aug', 'sup-1', 'med-1', 'Augmentin 625 Duo Tab', 'Amoxicillin 500mg + Clavulanic Acid 125mg', 160, 202.01, 10, 1, 0],
+      ['off-s4-mox', 'sup-4', 'med-2', 'Moxikind-CV 625 Tab', 'Amoxicillin 500mg + Clavulanic Acid 125mg', 118, 189.10, 10, 2, 0],
+      ['off-s4-clavam', 'sup-4', 'med-3', 'Clavam 625 Tablet', 'Amoxicillin 500mg + Clavulanic Acid 125mg', 130, 201, 5, 1, 0],
+      ['off-s1-pand', 'sup-1', 'med-4', 'Pan-D Capsule PR', 'Pantoprazole 40mg + Domperidone 30mg', 155, 210, 10, 1, 0],
+      ['off-s2-pand', 'sup-2', 'med-4', 'Pan-D Capsule PR', 'Pantoprazole 40mg + Domperidone 30mg', 140, 210, 10, 2, 2],
+      ['off-s3-panto', 'sup-3', 'med-5', 'Pantocid DSR Cap', 'Pantoprazole 40mg + Domperidone 30mg', 132, 188, 10, 2, 1]
+    ];
+    return rows.map(row => {
+      const net = netBuyPrice(row[5], row[7], row[8], row[9]);
+      const margin = row[6] > 0 ? round2(((row[6] - net) / row[6]) * 100) : 0;
+      return {
+        id: row[0], supplier_id: row[1], medicine_id: row[2], brand_name: row[3], salt_composition: row[4],
+        buy_price_ptr: row[5], mrp: row[6], scheme_label: row[8] > 0 ? row[7] + '+' + row[8] : 'No Scheme',
+        buy_qty: row[7], free_qty: row[8], cash_discount_pct: row[9], net_buy_price: net, retail_margin_pct: margin,
+        valid_until: '2026-11-26', source: 'Manual Monthly Circular'
+      };
+    });
+  }
+
+  function decorateOffers(rows, suppliers) {
+    const byId = {};
+    (suppliers || []).forEach(s => { byId[s.id] = s; });
+    const bestMargin = {};
+    const bestNet = {};
+    rows.forEach(row => {
+      const salt = String(row.salt_composition || '').toLowerCase();
+      const brand = String(row.brand_name || '').toLowerCase();
+      if (bestMargin[salt] == null || row.retail_margin_pct > bestMargin[salt]) bestMargin[salt] = row.retail_margin_pct;
+      if (bestNet[brand] == null || row.net_buy_price < bestNet[brand]) bestNet[brand] = row.net_buy_price;
+    });
+    return rows.map(row => {
+      const sup = byId[row.supplier_id] || {};
+      const salt = String(row.salt_composition || '').toLowerCase();
+      const brand = String(row.brand_name || '').toLowerCase();
+      const best = row.retail_margin_pct === bestMargin[salt] && row.retail_margin_pct > 0;
+      return Object.assign({}, row, {
+        supplier_name: sup.name || row.supplier_name || '',
+        supplier_phone: sup.phone || row.supplier_phone || '',
+        short_code: sup.short_code || row.short_code || '',
+        best_margin: best,
+        best_net_for_brand: row.net_buy_price === bestNet[brand],
+        deal_label: best ? 'BEST MARGIN DEAL' : ''
+      });
+    });
+  }
+
+  function ensureCommercial(raw) {
+    const codes = { 'sup-1': ['S1', 0], 'sup-2': ['S2', 2], 'sup-3': ['S3', 1], 'sup-4': ['S4', 0] };
+    (raw.suppliers || []).forEach(s => {
+      const known = codes[s.id];
+      if (known && !s.short_code) {
+        s.short_code = known[0];
+        if (s.cash_discount_pct == null) s.cash_discount_pct = known[1];
+      }
+    });
+    if (!raw.supplierOffers || !raw.supplierOffers.length) raw.supplierOffers = demoOffers();
+  }
+
   function buildLocalV2(raw) {
     raw.customers = raw.customers || [];
     raw.creditTransactions = raw.creditTransactions || [];
@@ -215,6 +297,7 @@
       if (raw.invoiceItems.some(li => li.batch_id === b.id)) return;
       const med = raw.medicines.find(m => m.id === b.medicine_id) || {};
       const free = b.free_strips_received || 0;
+      const buy = b.scheme_buy_qty > 0 ? b.scheme_buy_qty : (free > 0 ? 10 : 1);
       raw.invoiceItems.push({
         id: 'li-' + b.id,
         invoice_id: b.purchase_invoice_id,
@@ -228,7 +311,9 @@
         expiry_date: b.expiry_date,
         strips_qty: b.strips_count,
         free_strips_qty: free,
-        scheme_label: free > 0 ? '10+' + free : '',
+        scheme_label: free > 0 ? (buy + '+' + free) : 'No Scheme',
+        scheme_buy_qty: buy,
+        scheme_free_qty: free,
         ptr_per_strip: b.ptr_per_strip,
         mrp_per_strip: b.mrp_per_strip,
         gst_percent: b.gst_percent
@@ -247,7 +332,9 @@
       if (existing && (existing.status === 'ORDERED' || existing.status === 'CLEARED')) return;
       const last = [...raw.rawBatches].reverse().find(b => b.medicine_id === med.id);
       const sup = last ? raw.suppliers.find(s => s.id === last.supplier_id) : null;
-      const scheme = last && last.free_strips_received > 0 ? '10+' + last.free_strips_received : '';
+      const scheme = last && last.free_strips_received > 0
+        ? ((last.scheme_buy_qty > 0 ? last.scheme_buy_qty : 10) + '+' + (last.scheme_free_qty != null ? last.scheme_free_qty : last.free_strips_received))
+        : '';
       if (existing) {
         existing.last_ptr = last ? last.ptr_per_strip : existing.last_ptr;
         existing.last_scheme = scheme;
@@ -302,6 +389,7 @@
   }
 
   function computeFullStateFromRaw(raw) {
+    ensureCommercial(raw);
     const alertDays = raw.settings.expiry_alert_days || 60;
     const medMap = {};
     raw.medicines.forEach(m => { medMap[m.id] = m; });
@@ -346,7 +434,15 @@
       .sort((a, b) => a.days_to_expiry - b.days_to_expiry);
 
     const expiringBatches = batches.filter(b => b.is_expiring_soon);
-    const lowStockBatches = batches.filter(b => b.is_low_stock);
+    const stripsByMedicine = {};
+    batches.forEach(b => { stripsByMedicine[b.medicine_id] = (stripsByMedicine[b.medicine_id] || 0) + Number(b.strips_count || 0); });
+    const lowMedicineIds = {};
+    raw.medicines.forEach(m => {
+      const strips = stripsByMedicine[m.id] || 0;
+      if (strips <= (m.min_reorder_strips || 0)) lowMedicineIds[m.id] = true;
+    });
+    batches.forEach(b => { b.is_low_stock = !!lowMedicineIds[b.medicine_id]; });
+    const lowStockCount = Object.keys(lowMedicineIds).length;
 
     const supplierGroups = {};
     for (const eb of expiringBatches) {
@@ -363,22 +459,41 @@
       supplierGroups[supName].items.push(eb);
     }
 
+    const hi = raw.settings.default_language === 'hi';
     const whatsappReturnSummary = Object.values(supplierGroups).map(g => {
-      const lines = [
-        `*EXPIRY RETURN / CREDIT NOTE CLAIM*`,
-        `From: *${raw.settings.store_name}*`,
-        `अक्षय मेडिकोज़, उज्जैन`,
-        `(${raw.settings.city})`,
-        `To: *${g.supplierName}*`,
-        `Return Window: Within ${alertDays} Days of Expiry`,
-        `----------------------------------------`,
-        ...g.items.map((it, idx) =>
-          `${idx + 1}. *${it.brand_name}* | Batch: ${it.batch_number} | Exp: ${it.expiry_date} (${it.days_to_expiry}d) | Qty: ${it.strips_count} Strips + ${it.loose_tablets_count} Loose | Bill: ${it.invoice_number} | PTR Credit: Rs.${it.ptr_value}`
-        ),
-        `----------------------------------------`,
-        `*Total Credit Note Claim (PTR): Rs.${g.totalCreditValuePtr.toLocaleString('en-IN')}*`,
-        `Please collect return goods on next delivery visit.`
-      ];
+      const lines = hi
+        ? [
+          '*समाप्ति वापसी / क्रेडिट नोट दावा*',
+          'प्रेषक: *अक्षय मेडिकोज़*',
+          'उज्जैन',
+          'प्राप्तकर्ता: *' + g.supplierName + '*',
+          'समाप्ति अवधि: ' + alertDays + ' दिन',
+          '----------------------------------------',
+          ...g.items.map((it, idx) =>
+            (idx + 1) + '. *' + it.brand_name + '* | बैच: ' + it.batch_number + ' | समाप्ति: ' + it.expiry_date +
+            ' | मात्रा: ' + it.strips_count + ' पट्टी + ' + it.loose_tablets_count + ' खुली | बिल: ' + it.invoice_number +
+            ' | खरीद रेट (PTR) क्रेडिट: Rs.' + it.ptr_value
+          ),
+          '----------------------------------------',
+          '*कुल खरीद रेट (PTR) क्रेडिट: Rs.' + g.totalCreditValuePtr.toLocaleString('en-IN') + '*',
+          'कृपया अगली डिलीवरी पर सामान वापस ले लें।'
+        ]
+        : [
+          '*EXPIRY RETURN / CREDIT NOTE CLAIM*',
+          'From: *' + raw.settings.store_name + '*',
+          raw.settings.city,
+          'To: *' + g.supplierName + '*',
+          'Return window: within ' + alertDays + ' days of expiry',
+          '----------------------------------------',
+          ...g.items.map((it, idx) =>
+            (idx + 1) + '. *' + it.brand_name + '* | Batch: ' + it.batch_number + ' | Expiry: ' + it.expiry_date +
+            ' (' + it.days_to_expiry + 'd) | Qty: ' + it.strips_count + ' strips + ' + it.loose_tablets_count + ' loose | Bill: ' + it.invoice_number +
+            ' | Buy Price (PTR) credit: Rs.' + it.ptr_value
+          ),
+          '----------------------------------------',
+          '*Total Buy Price (PTR) credit: Rs.' + g.totalCreditValuePtr.toLocaleString('en-IN') + '*',
+          'Please collect the return goods on the next delivery visit.'
+        ];
       return { ...g, whatsappText: lines.join('\n') };
     });
 
@@ -395,7 +510,7 @@
         avgMarginPercent: totalMrpValue > 0 ? Number((((totalMrpValue - totalPtrValue) / totalMrpValue) * 100).toFixed(1)) : 0,
         expiringCount: expiringBatches.length,
         expiringPtrValue: Number(expiringBatches.reduce((acc, b) => acc + b.ptr_value, 0).toFixed(2)),
-        lowStockCount: lowStockBatches.length,
+        lowStockCount: lowStockCount,
         todaySalesCount: activeSales.length,
         todaySalesAmount: Number(activeSales.reduce((acc, s) => acc + s.billed_amount, 0).toFixed(2)),
         pendingCreditBalance: extra.pendingCreditBalance,
@@ -410,6 +525,7 @@
       customers: extra.customers,
       creditTransactions: extra.creditTransactions,
       refills: extra.refills,
+      offers: decorateOffers(raw.supplierOffers || [], raw.suppliers),
       batches,
       expiringBatches,
       whatsappReturnSummary,
@@ -820,7 +936,8 @@
         storeName: raw.settings.store_name,
         city: raw.settings.city,
         sale: sale,
-        expiryDate: batch ? batch.expiry_date : ''
+        expiryDate: batch ? batch.expiry_date : '',
+        lang: raw.settings.default_language
       });
       return {
         ok: true,
@@ -850,7 +967,27 @@
           b.loose_tablets_count = total % packSize;
         }
         sale.is_cancelled = 1;
-        sale.sale_note += ' [UNDONE / RESTORED]';
+        sale.sale_note = (sale.sale_note || '') + ' [UNDONE / RESTORED]';
+        if (String(sale.payment_mode || '').toUpperCase() === 'CREDIT') {
+          const customer = raw.customers.find(c => c.id === sale.customer_id || c.phone === sale.customer_phone);
+          if (customer) {
+            const amount = Number(sale.billed_amount) || 0;
+            customer.outstanding_balance = round2(Math.max(0, Number(customer.outstanding_balance || 0) - amount));
+            raw.creditTransactions = raw.creditTransactions || [];
+            raw.creditTransactions.push({
+              id: 'ctx-rev-' + Date.now(),
+              customer_id: customer.id,
+              sale_id: sale.id,
+              txn_type: 'REVERSAL',
+              amount: amount,
+              payment_mode: 'CREDIT',
+              reference_note: 'Sale undone',
+              item_summary: sale.brand_name || '',
+              balance_after: customer.outstanding_balance,
+              created_at: '2026-10-27 18:30:00'
+            });
+          }
+        }
       }
       saveRaw(raw);
       return computeFullStateFromRaw(raw);
@@ -941,7 +1078,9 @@
       raw.shortbook.push({
         id: 'sb-' + Date.now(), medicine_id: null, brand_name: brand, pack_label: body.packLabel || '',
         supplier_id: sup ? sup.id : null, supplier_name: sup ? sup.name : 'Unassigned', supplier_phone: sup ? sup.phone : '',
-        requested_strips: Math.max(1, parseInt(body.requestedStrips, 10) || 1), last_ptr: null, last_scheme: '',
+        requested_strips: Math.max(1, parseInt(body.requestedStrips, 10) || 1),
+        last_ptr: body.lastPtr != null ? Number(body.lastPtr) : null,
+        last_scheme: body.lastScheme || '',
         note: body.note || '', source: 'MANUAL', status: 'OPEN'
       });
       saveRaw(raw);
@@ -1056,6 +1195,140 @@
         return computeFullStateFromRaw(fresh);
       }
       return next;
+    },
+
+    async saveSupplier(body, id) {
+      body = body || {};
+      if (isHttpBackend) {
+        try {
+          const res = await fetch(id ? '/api/suppliers/' + id : '/api/suppliers', {
+            method: id ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not save the supplier');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = loadRaw();
+      ensureCommercial(raw);
+      const phone = phoneDigits(body.phone);
+      if (phone.length !== 10) throw new Error('Mobile number must be 10 digits');
+      const name = String(body.name || '').trim();
+      if (!name) throw new Error('Supplier name is required');
+      if (id) {
+        const sup = raw.suppliers.find(s => s.id === id);
+        if (!sup) throw new Error('Supplier not found');
+        sup.name = name;
+        sup.short_code = body.shortCode || sup.short_code || '';
+        sup.phone = phone;
+        sup.gstin = body.gstin || sup.gstin || '';
+        sup.address = body.address || sup.address || '';
+        sup.credit_days = parseInt(body.creditDays, 10) || sup.credit_days || 21;
+        sup.cash_discount_pct = Number(body.cashDiscountPct) || 0;
+      } else {
+        raw.suppliers.push({
+          id: 'sup-' + Date.now(), name: name, short_code: body.shortCode || '', gstin: body.gstin || '',
+          phone: phone, address: body.address || 'Ujjain', credit_days: parseInt(body.creditDays, 10) || 21,
+          cash_discount_pct: Number(body.cashDiscountPct) || 0, expiry_return_window_days: 60
+        });
+      }
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async saveOffer(body) {
+      body = body || {};
+      if (isHttpBackend) {
+        try {
+          const res = await fetch(body.id ? '/api/offers/' + body.id : '/api/offers', {
+            method: body.id ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not save the offer');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = loadRaw();
+      ensureCommercial(raw);
+      const scheme = schemeParts(body.schemeLabel, body.buyQty, body.freeQty);
+      const ptr = Number(body.buyPricePtr) || 0;
+      const mrp = Number(body.mrp) || 0;
+      const discount = Number(body.cashDiscountPct) || 0;
+      const net = netBuyPrice(ptr, scheme.buy, scheme.free, discount);
+      raw.supplierOffers.push({
+        id: 'off-' + Date.now(), supplier_id: body.supplierId, medicine_id: body.medicineId || null,
+        brand_name: body.brandName, salt_composition: body.saltComposition || '', buy_price_ptr: ptr, mrp: mrp,
+        scheme_label: scheme.label, buy_qty: scheme.buy, free_qty: scheme.free, cash_discount_pct: discount,
+        net_buy_price: net, retail_margin_pct: mrp > 0 ? round2(((mrp - net) / mrp) * 100) : 0,
+        valid_until: body.validUntil || '2026-11-26', source: body.source || 'Manual Monthly Circular'
+      });
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async orderOffer(id, body) {
+      body = body || {};
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/offers/' + id + '/shortbook', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+          });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not send the deal to the shortbook');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = loadRaw();
+      ensureCommercial(raw);
+      const offer = decorateOffers(raw.supplierOffers, raw.suppliers).find(row => row.id === id);
+      if (!offer) throw new Error('Offer not found');
+      return window.StoreEngine.addShortbook({
+        brandName: offer.brand_name,
+        supplierId: offer.supplier_id,
+        requestedStrips: body.requestedStrips || 1,
+        lastPtr: offer.net_buy_price,
+        lastScheme: offer.scheme_label,
+        note: 'Order this deal — ' + (offer.short_code || offer.supplier_name)
+      });
+    },
+
+    async createRefill(body) {
+      body = body || {};
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/refills', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+          });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not add the refill');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = loadRaw();
+      const med = raw.medicines.find(m => m.id === body.medicineId);
+      if (!med) throw new Error('Refill medicine was not found');
+      const phone = phoneDigits(body.phone);
+      if (phone.length !== 10) throw new Error('Mobile number must be 10 digits');
+      raw.refills.push({
+        id: 'ref-' + Date.now(), patient_name: body.patientName, phone: phone, medicine_id: med.id,
+        brand_name: med.brand_name, salt_composition: med.salt_composition, strips_qty: parseInt(body.stripsQty, 10) || 1,
+        loose_qty: 0, interval_days: parseInt(body.intervalDays, 10) || 30, last_purchase_date: '2026-10-27',
+        next_due_date: '2026-11-26', status: 'ACTIVE'
+      });
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
     },
 
     async resetDemo() {

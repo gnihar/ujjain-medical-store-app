@@ -17,7 +17,7 @@ Open the shop at `/`. Open the phone installer at `/qr`.
 
 ## Modules
 
-Dashboard, purchase bills, inventory and racks, shortbook, counter sale, credit ledger, monthly refills, and stock audit.
+Dashboard, purchase bills, inventory and racks, shortbook, suppliers and stockist schemes, counter sale, credit ledger, monthly refills, and stock audit.
 
 On `/qr`, the default code points at the public file:
 
