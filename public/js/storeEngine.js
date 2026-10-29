@@ -65,7 +65,12 @@
         phone: '+91 98260 12345',
         expiry_alert_days: 60,
         default_language: 'en',
-        owner_pin: '1234'
+        owner_pin: '1234',
+        admin_pattern: '0-3-6-7-8',
+        biometric_credential_id: 'bio-demo-akshay-1',
+        biometric_enabled: 1,
+        tutorial_completed: 0,
+        admin_lock_minutes: 15
       },
       suppliers: [
         { id: 'sup-1', name: 'Mahakal Pharma Agency, Ujjain', gstin: '23AABCM4821E1Z4', phone: '+91 94250 91101', address: '14, Freeganj Main Road, Ujjain', credit_days: 21, expiry_return_window_days: 60 },
@@ -178,14 +183,24 @@
             { brandName: 'Aciloc RD 20 Tablet', saltComposition: 'Pantoprazole 40mg + Domperidone 30mg', manufacturer: 'Cadila Pharma', packSizeUnits: 15, packLabel: '1x15 Tabs', rackLocation: 'Rack B-2', scheduleType: 'H', batchNumber: 'AC809', expiryDate: '2026-12-12', stripsCount: 18, freeStrips: 2, ptrPerStrip: 96.0, mrpPerStrip: 135.0, gstPercent: 12 }
           ]
         }
-      }
+      },
+      expenses: [
+        { id: 'exp-salary-rahul', category: 'SALARY', title: 'Rahul (Counter Staff)', employee_name: 'Rahul', amount: 12000, expense_date: '2026-10-01', payment_mode: 'CASH', note: 'October salary' },
+        { id: 'exp-rent-oct', category: 'RENT', title: 'Shop Rent (Freeganj)', employee_name: '', amount: 8000, expense_date: '2026-10-05', payment_mode: 'CASH', note: 'October rent' },
+        { id: 'exp-power-oct', category: 'ELECTRICITY', title: 'MPPKVVCL Bill', employee_name: '', amount: 1450, expense_date: '2026-10-03', payment_mode: 'CASH', note: 'Fridge and shop' }
+      ],
+      vouchers: [
+        { id: 'vch-demo-1', voucher_number: 'VCH-1042', voucher_type: 'SALE', status: 'DRAFT', customer_or_supplier: 'Rajesh Sharma', customer_phone: '9826011111', items_json: JSON.stringify([{ medicineId: 'med-6', strips: 2, loose: 0 }]), total_amount: 67.6, estimated_margin: 18.6, payment_mode: 'CASH', created_by_role: 'EMPLOYEE', created_at: '2026-10-27 18:10:00' }
+      ],
+      expiryReturns: [],
+      aiUsage: { year_month: '2026-10', calls_used: 16, monthly_limit: 300 }
     };
   }
 
   function loadRaw() {
     try {
       const s = localStorage.getItem(STORAGE_KEY);
-      if (s) return JSON.parse(s);
+      if (s) return ensureV3(JSON.parse(s));
     } catch (_e) {}
     const init = getInitialLocalRaw();
     saveRaw(init);
@@ -388,8 +403,79 @@
     };
   }
 
+  function ensureV3(raw) {
+    raw.expenses = raw.expenses || [];
+    raw.vouchers = raw.vouchers || [];
+    raw.expiryReturns = raw.expiryReturns || [];
+    raw.aiUsage = raw.aiUsage || { year_month: '2026-10', calls_used: 0, monthly_limit: 300 };
+    raw.settings.admin_pattern = raw.settings.admin_pattern || '0-3-6-7-8';
+    if (!raw.settings.biometric_credential_id) raw.settings.biometric_credential_id = 'bio-demo-akshay-1';
+    if (raw.settings.biometric_enabled == null) raw.settings.biometric_enabled = 1;
+    if (raw.settings.admin_lock_minutes == null) raw.settings.admin_lock_minutes = 15;
+    if (raw.settings.tutorial_completed == null) raw.settings.tutorial_completed = 0;
+    return raw;
+  }
+
+  function localPl(raw) {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    function addDaysIso(iso, n) {
+      const d = new Date(iso + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    }
+    function report(range, from, to) {
+      const sales = (raw.sales || []).filter(s => !s.is_cancelled && String(s.sold_at || '').slice(0, 10) >= from && String(s.sold_at || '').slice(0, 10) <= to);
+      const totalSales = Number(sales.reduce((s, row) => s + Number(row.billed_amount || 0), 0).toFixed(2));
+      const cogs = Number(sales.reduce((s, row) => {
+        if (Number(row.cogs_amount) > 0) return s + Number(row.cogs_amount);
+        const pack = Number(row.pack_size_units) || 10;
+        const units = Number(row.total_units_deducted) || 0;
+        return s + (units / pack) * Number(row.ptr_per_strip || 0);
+      }, 0).toFixed(2));
+      const grossMargin = Number((totalSales - cogs).toFixed(2));
+      const exps = (raw.expenses || []).filter(e => e.expense_date >= from && e.expense_date <= to);
+      const salary = Number(exps.filter(e => e.category === 'SALARY').reduce((s, e) => s + Number(e.amount), 0).toFixed(2));
+      const other = Number(exps.filter(e => e.category !== 'SALARY').reduce((s, e) => s + Number(e.amount), 0).toFixed(2));
+      const expenses = Number((salary + other).toFixed(2));
+      const netProfit = Number((grossMargin - expenses).toFixed(2));
+      return {
+        range, from, to, prorate: false, totalSales, billCount: sales.length, cogs,
+        grossMargin, grossMarginPct: totalSales ? Number(((grossMargin / totalSales) * 100).toFixed(2)) : 0,
+        expenses, salary, otherExpenses: other, proratedAmount: 0, netProfit,
+        netProfitPct: totalSales ? Number(((netProfit / totalSales) * 100).toFixed(2)) : 0
+      };
+    }
+    const months = {};
+    (raw.sales || []).filter(s => !s.is_cancelled).forEach(s => {
+      const month = String(s.sold_at || '').slice(0, 7);
+      if (month.length < 7) return;
+      if (!months[month]) months[month] = {};
+      const key = s.medicine_id || s.brand_name;
+      if (!months[month][key]) months[month][key] = { medicine_id: s.medicine_id, brand_name: s.brand_name, strips: 0, loose: 0, revenue: 0, margin: 0 };
+      months[month][key].strips += Number(s.strips_sold) || 0;
+      months[month][key].loose += Number(s.loose_tablets_sold) || 0;
+      months[month][key].revenue += Number(s.billed_amount) || 0;
+      months[month][key].margin += Number(s.margin_amount) || 0;
+    });
+    return {
+      pl: {
+        '1d': report('1d', today, today),
+        '1w': report('1w', addDaysIso(today, -6), today),
+        '1m': report('1m', today.slice(0, 7) + '-01', today)
+      },
+      seasonality: {
+        months: Object.keys(months).sort().map(month => {
+          const items = Object.values(months[month]).sort((a, b) => b.strips - a.strips);
+          const top = items[0] ? items[0].strips : 0;
+          return { month, top: items.slice(0, 8).map(item => Object.assign({}, item, { bar: top ? Math.round(item.strips / top * 100) : 0 })) };
+        })
+      }
+    };
+  }
+
   function computeFullStateFromRaw(raw) {
     ensureCommercial(raw);
+    ensureV3(raw);
     const alertDays = raw.settings.expiry_alert_days || 60;
     const medMap = {};
     raw.medicines.forEach(m => { medMap[m.id] = m; });
@@ -531,7 +617,22 @@
       whatsappReturnSummary,
       sales: raw.sales,
       audits: raw.audits,
-      sampleTemplates: raw.sampleTemplates
+      sampleTemplates: raw.sampleTemplates,
+      expenses: raw.expenses,
+      vouchers: (raw.vouchers || []).map(row => {
+        let items = [];
+        try { items = typeof row.items_json === 'string' ? JSON.parse(row.items_json) : (row.items || []); } catch (_e) { items = row.items || []; }
+        return Object.assign({}, row, { items });
+      }),
+      expiryReturns: raw.expiryReturns,
+      aiQuota: {
+        year_month: raw.aiUsage.year_month,
+        calls_used: raw.aiUsage.calls_used,
+        monthly_limit: raw.aiUsage.monthly_limit || 300,
+        remaining: Math.max(0, (raw.aiUsage.monthly_limit || 300) - (raw.aiUsage.calls_used || 0)),
+        level: ((raw.aiUsage.monthly_limit || 300) - (raw.aiUsage.calls_used || 0)) === 0 ? 'exhausted' : ((raw.aiUsage.monthly_limit || 300) - (raw.aiUsage.calls_used || 0)) < 10 ? 'crit' : ((raw.aiUsage.monthly_limit || 300) - (raw.aiUsage.calls_used || 0)) <= 50 ? 'warn' : 'ok'
+      },
+      ...localPl(raw)
     };
   }
 
@@ -575,6 +676,14 @@
         if (!/^\d{4}$/.test(pin)) throw new Error('Owner PIN must be 4 digits');
         raw.settings.owner_pin = pin;
       }
+      if (payload.admin_pattern) {
+        const parts = String(payload.admin_pattern).split('-');
+        if (parts.length < 4 || parts.some(p => !/^[0-8]$/.test(p))) throw new Error('Pattern must join at least 4 different dots');
+        raw.settings.admin_pattern = parts.join('-');
+      }
+      if (payload.admin_lock_minutes != null) raw.settings.admin_lock_minutes = parseInt(payload.admin_lock_minutes, 10) || 15;
+      if (payload.biometric_enabled != null) raw.settings.biometric_enabled = payload.biometric_enabled ? 1 : 0;
+      if (payload.tutorial_completed != null) raw.settings.tutorial_completed = payload.tutorial_completed ? 1 : 0;
       saveRaw(raw);
       return computeFullStateFromRaw(raw);
     },
@@ -894,7 +1003,10 @@
           ? `FEFO Batch ${target.batch_number} | Opened ${opened} strip(s) -> ${newLoose} loose left`
           : `FEFO Batch ${target.batch_number} | Remaining: ${newStrips} strips + ${newLoose} loose`,
         is_cancelled: 0,
-        sold_at: new Date().toLocaleTimeString('en-IN')
+        ptr_per_strip: target.ptr_per_strip,
+        cogs_amount: Number(((reqUnits / packSize) * target.ptr_per_strip).toFixed(2)),
+        margin_amount: Number((billed - ((reqUnits / packSize) * target.ptr_per_strip)).toFixed(2)),
+        sold_at: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date()).replace(', ', ' ')
       });
       saveRaw(raw);
       return computeFullStateFromRaw(raw);
@@ -1329,6 +1441,335 @@
       });
       saveRaw(raw);
       return computeFullStateFromRaw(raw);
+    },
+
+    async unlock(body) {
+      body = body || {};
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/auth/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Unlock failed');
+          return json;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      const method = String(body.method || 'pin');
+      if (method === 'pin' && String(body.pin) !== String(raw.settings.owner_pin)) throw new Error('Wrong PIN');
+      if (method === 'pattern' && String(body.pattern) !== String(raw.settings.admin_pattern)) throw new Error('Wrong pattern');
+      if (method === 'biometric' && String(body.credentialId) !== String(raw.settings.biometric_credential_id)) throw new Error('Biometric credential does not match this store');
+      return { ok: true, unlocked: true, method };
+    },
+
+    async registerBiometric(credentialId) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/auth/webauthn/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not register biometrics');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      raw.settings.biometric_credential_id = credentialId;
+      raw.settings.biometric_enabled = 1;
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async scanStock(body) {
+      body = body || {};
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/ai/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const json = await res.json();
+          if (res.status === 429 || !json.ok) {
+            const err = new Error(json.error || 'Scan failed');
+            err.quota = json.quota;
+            throw err;
+          }
+          return json;
+        } catch (err) {
+          if (err && err.message && !/fetch|network|quota|Gemini|scan/i.test(err.message)) throw err;
+          if (err && err.quota) throw err;
+          if (err && /quota|Gemini|Scan/i.test(err.message || '')) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      const limit = raw.aiUsage.monthly_limit || 300;
+      if ((raw.aiUsage.calls_used || 0) >= limit) {
+        const err = new Error('Monthly 300 AI scan quota reached (resets on the 1st of next month). Use voice entry or the manual rack form.');
+        err.quota = { calls_used: raw.aiUsage.calls_used, monthly_limit: limit, remaining: 0, level: 'exhausted' };
+        throw err;
+      }
+      raw.aiUsage.calls_used += 1;
+      saveRaw(raw);
+      const parsed = window.parseVoiceStockEntry ? window.parseVoiceStockEntry(body.rawText || body.transcript || '') : { brand_name: 'Dolo 650 Tablet', strips_qty: 10 };
+      const item = body.rawText ? {
+        brand_name: parsed.brand_name, strips_qty: parsed.strips_qty, rack_location: parsed.rack_location,
+        batch_number: parsed.batch_number, expiry_date: parsed.expiry_date, ptr_per_strip: parsed.ptr_per_strip, mrp_per_strip: parsed.mrp_per_strip
+      } : { brand_name: 'Dolo 650 Tablet', salt_composition: 'Paracetamol 650mg', strips_qty: 10, rack_location: 'Rack A-1', batch_number: 'DL552', expiry_date: '2027-08-31', ptr_per_strip: 24.5, mrp_per_strip: 33.8 };
+      return { ok: true, provider: 'offline', parsed: { items: [item] }, quota: { calls_used: raw.aiUsage.calls_used, monthly_limit: limit, remaining: limit - raw.aiUsage.calls_used, level: 'ok' } };
+    },
+
+    async parseVoice(transcript) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/voice/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }) });
+          const json = await res.json();
+          if (json.ok) return json.parsed;
+        } catch (_e) {}
+      }
+      if (!window.parseVoiceStockEntry) throw new Error('Voice parser missing');
+      return window.parseVoiceStockEntry(transcript);
+    },
+
+    async addVoiceStock(transcript) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/voice/add-stock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }) });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not add spoken stock');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const parsed = await this.parseVoice(transcript);
+      return this.quickRackOnboard({
+        brandName: parsed.brand_name,
+        rackLocation: parsed.rack_location || 'Rack A-1',
+        batchNumber: parsed.batch_number,
+        expiryDate: parsed.expiry_date || '2027-08-31',
+        stripsCount: parsed.strips_qty,
+        looseTabletsCount: parsed.loose_qty,
+        ptrPerStrip: parsed.ptr_per_strip,
+        mrpPerStrip: parsed.mrp_per_strip
+      });
+    },
+
+    async saveVoucher(body, id) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch(id ? '/api/vouchers/' + id : '/api/vouchers', {
+            method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+          });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not save the voucher');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      if (id) {
+        const row = raw.vouchers.find(v => v.id === id);
+        if (!row || row.status !== 'DRAFT') throw new Error('Only a draft voucher can be edited');
+        row.items_json = JSON.stringify(body.items || []);
+        row.customer_or_supplier = body.customerOrSupplier || row.customer_or_supplier;
+        row.total_amount = body.totalAmount || row.total_amount;
+        saveRaw(raw);
+        return computeFullStateFromRaw(raw);
+      }
+      const n = 1000 + raw.vouchers.length + 1;
+      raw.vouchers.unshift({
+        id: 'vch-' + Date.now(), voucher_number: 'VCH-' + n, voucher_type: body.voucherType || 'SALE', status: 'DRAFT',
+        customer_or_supplier: body.customerOrSupplier || '', customer_phone: body.customerPhone || '',
+        items_json: JSON.stringify(body.items || []), total_amount: body.totalAmount || 0, payment_mode: body.paymentMode || 'CASH',
+        created_by_role: body.createdByRole || 'EMPLOYEE', created_at: new Date().toISOString()
+      });
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async finalizeVoucher(id) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/vouchers/' + id + '/finalize', { method: 'POST' });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not finalize the voucher');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      const row = raw.vouchers.find(v => v.id === id);
+      if (!row || row.status !== 'DRAFT') throw new Error('Only a draft voucher can be finalized');
+      const items = JSON.parse(row.items_json || '[]');
+      if (row.voucher_type === 'PURCHASE') {
+        for (const item of items) {
+          await this.quickRackOnboard({
+            brandName: item.brandName || item.brand_name,
+            stripsCount: item.stripsCount || item.strips_qty,
+            rackLocation: item.rackLocation || item.rack_location,
+            batchNumber: item.batchNumber || item.batch_number,
+            expiryDate: item.expiryDate || item.expiry_date,
+            ptrPerStrip: item.ptrPerStrip || item.ptr_per_strip,
+            mrpPerStrip: item.mrpPerStrip || item.mrp_per_strip
+          });
+        }
+        const again = ensureV3(loadRaw());
+        const found = again.vouchers.find(v => v.id === id);
+        if (found) { found.status = 'FINALIZED'; found.finalized_at = new Date().toISOString(); }
+        saveRaw(again);
+        return computeFullStateFromRaw(again);
+      }
+      for (const item of items) {
+        await this.recordSale({
+          medicineId: item.medicineId || item.medicine_id,
+          stripsSold: item.strips || item.stripsSold || 0,
+          looseTabletsSold: item.loose || item.looseTabletsSold || 0,
+          patientName: item.patientName || row.customer_or_supplier,
+          customerPhone: row.customer_phone,
+          paymentMode: row.payment_mode || 'CASH'
+        });
+      }
+      const again = ensureV3(loadRaw());
+      const found = again.vouchers.find(v => v.id === id);
+      if (found) { found.status = 'FINALIZED'; found.finalized_at = new Date().toISOString(); }
+      saveRaw(again);
+      return computeFullStateFromRaw(again);
+    },
+
+    async cancelVoucher(id) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/vouchers/' + id + '/cancel', { method: 'POST' });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not cancel the voucher');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      const row = raw.vouchers.find(v => v.id === id);
+      if (!row || row.status !== 'DRAFT') throw new Error('Only a draft voucher can be cancelled');
+      row.status = 'CANCELLED';
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async saveExpense(body, id) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch(id ? '/api/expenses/' + id : '/api/expenses', {
+            method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+          });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not save the expense');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      if (id) {
+        const row = raw.expenses.find(e => e.id === id);
+        if (!row) throw new Error('Expense not found');
+        Object.assign(row, { category: body.category || row.category, title: body.title || row.title, amount: Number(body.amount), expense_date: body.expenseDate || row.expense_date, note: body.note || '' });
+      } else {
+        raw.expenses.unshift({ id: 'exp-' + Date.now(), category: body.category || 'OTHER', title: body.title || body.category, employee_name: body.employeeName || '', amount: Number(body.amount), expense_date: body.expenseDate, payment_mode: 'CASH', note: body.note || '' });
+      }
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async deleteExpense(id) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/expenses/' + id, { method: 'DELETE' });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not delete the expense');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      raw.expenses = raw.expenses.filter(e => e.id !== id);
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async createExpiryReturn(body) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/expiry-returns', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not create the return slip');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      const batch = raw.rawBatches.find(b => b.id === body.batchId);
+      const med = raw.medicines.find(m => m.id === (batch && batch.medicine_id)) || {};
+      raw.expiryReturns.unshift({
+        id: 'ret-' + Date.now(), return_slip_no: 'RET-' + (200 + raw.expiryReturns.length + 1),
+        batch_id: body.batchId, medicine_id: med.id, brand_name: med.brand_name || '', batch_number: batch ? batch.batch_number : '',
+        supplier_name: 'Supplier', strips_returned: body.stripsReturned || 0, loose_returned: 0,
+        ptr_per_strip: batch ? batch.ptr_per_strip : 0, ptr_value: (body.stripsReturned || 0) * (batch ? batch.ptr_per_strip : 0),
+        status: 'PENDING', credit_note_no: ''
+      });
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async updateExpiryReturn(id, body) {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/expiry-returns/' + id + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.error || 'Could not update the return');
+          return json.data;
+        } catch (err) {
+          if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
+        }
+      }
+      const raw = ensureV3(loadRaw());
+      const row = raw.expiryReturns.find(r => r.id === id);
+      if (!row) throw new Error('Return slip not found');
+      row.status = body.status;
+      if (body.status === 'ADJUSTED') {
+        row.credit_note_no = body.creditNoteNo || '';
+        const batch = raw.rawBatches.find(b => b.id === row.batch_id);
+        if (batch) {
+          batch.strips_count = Math.max(0, batch.strips_count - row.strips_returned);
+          batch.is_return_claimed = 1;
+        }
+      }
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async clearZero() {
+      if (isHttpBackend) {
+        try {
+          const res = await fetch('/api/demo/clear-zero', { method: 'POST' });
+          const json = await res.json();
+          if (json.ok) return json.data;
+        } catch (_e) {}
+      }
+      const raw = ensureV3(loadRaw());
+      const suppliers = raw.suppliers;
+      const settings = raw.settings;
+      settings.tutorial_completed = 0;
+      const blank = {
+        settings, suppliers, medicines: [], invoices: [], rawBatches: [], sales: [], audits: [],
+        customers: [], creditTransactions: [], refills: [], shortbook: [], invoiceItems: [],
+        supplierOffers: [], expenses: [], vouchers: [], expiryReturns: [],
+        aiUsage: { year_month: raw.aiUsage.year_month, calls_used: 0, monthly_limit: 300 },
+        sampleTemplates: raw.sampleTemplates
+      };
+      saveRaw(blank);
+      return computeFullStateFromRaw(blank);
     },
 
     async resetDemo() {

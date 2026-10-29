@@ -381,6 +381,187 @@ async function runTests() {
   assert(!homeHtml.includes('easy.css'));
   assert(!homeHtml.includes('A+'));
   console.log('   OK -> QR page, GitHub raw APK link, and shop shell.');
+
+  console.log('10. Testing v3 role shell, auth, quota, voice, vouchers, expiry, expenses, P/L...');
+  const shell = await fetch(BASE + '/');
+  const shellHtml = await shell.text();
+  assert(shellHtml.includes('data-owner="0"'));
+  assert(shellHtml.includes('id="modnav"'));
+  assert(shellHtml.includes('voice.js'));
+  assert(shellHtml.includes('v3ui.js'));
+  const appJs = await (await fetch(BASE + '/js/app.js')).text();
+  const v3js = await (await fetch(BASE + '/js/v3ui.js')).text();
+  const css = await (await fetch(BASE + '/css/styles.css')).text();
+  const i18n = await (await fetch(BASE + '/js/i18n.js')).text();
+  ['emp-counter', 'emp-stock', 'emp-expiry', 'emp-help', 'adm-pl', 'adm-expenses', 'adm-ops', 'adm-settings'].forEach(id => {
+    assert(appJs.includes(id), 'missing tab ' + id);
+  });
+  assert(css.includes('body[data-owner="0"] .owner-only'));
+  assert(v3js.includes('admin-unlock-modal'));
+  assert(v3js.includes('data-auth-tab="pattern"'));
+  assert(v3js.includes('data-auth-tab="biometric"'));
+  assert(appJs.includes("querySelectorAll('.owner-only')"));
+  assert(i18n.includes('Employee Mode · Switch to Admin'));
+  assert(i18n.includes('कर्मचारी मोड · मालिक मोड खोलें'));
+  assert(i18n.includes('Save Draft Voucher'));
+  assert(i18n.includes('कच्चा पर्चा सहेजें'));
+  assert(!i18n.includes("saveDraftVoucher: 'कच्चा पर्चा सेव करें (Draft)'"));
+
+  await req('POST', '/api/reset-demo');
+  const wrongPin = await req('POST', '/api/auth/unlock', { method: 'pin', pin: '0000' });
+  assert.strictEqual(wrongPin.status, 401);
+  const goodPin = await req('POST', '/api/auth/unlock', { method: 'pin', pin: '1234' });
+  assert.strictEqual(goodPin.status, 200);
+  assert.strictEqual(goodPin.json.unlocked, true);
+  const badPattern = await req('POST', '/api/auth/unlock', { method: 'pattern', pattern: '0-1-2-3' });
+  assert.strictEqual(badPattern.status, 401);
+  const goodPattern = await req('POST', '/api/auth/unlock', { method: 'pattern', pattern: '0-3-6-7-8' });
+  assert.strictEqual(goodPattern.json.method, 'pattern');
+  const badBio = await req('POST', '/api/auth/unlock', { method: 'biometric', credentialId: 'nope' });
+  assert.strictEqual(badBio.status, 401);
+  const goodBio = await req('POST', '/api/auth/unlock', { method: 'biometric', credentialId: 'bio-demo-akshay-1' });
+  assert.strictEqual(goodBio.json.unlocked, true);
+  const reg = await req('POST', '/api/auth/webauthn/register', { credentialId: 'bio-e2e-device' });
+  assert.strictEqual(reg.json.ok, true);
+  const regUnlock = await req('POST', '/api/auth/unlock', { method: 'biometric', credentialId: 'bio-e2e-device' });
+  assert.strictEqual(regUnlock.json.unlocked, true);
+  await req('POST', '/api/auth/webauthn/register', { credentialId: 'bio-demo-akshay-1' });
+  const shortPattern = await req('PUT', '/api/settings', { admin_pattern: '0-1' });
+  assert.strictEqual(shortPattern.status, 400);
+  const newPattern = await req('PUT', '/api/settings', { admin_pattern: '0-1-2-5-8' });
+  assert.strictEqual(newPattern.json.data.settings.admin_pattern, '0-1-2-5-8');
+  const useNew = await req('POST', '/api/auth/unlock', { method: 'pattern', pattern: '0-1-2-5-8' });
+  assert.strictEqual(useNew.json.unlocked, true);
+  await req('PUT', '/api/settings', { admin_pattern: '0-3-6-7-8', admin_lock_minutes: 15 });
+
+  const parsed = await req('POST', '/api/voice/parse', {
+    transcript: 'Dolo 650 20 strip rack A1 batch DL99 expiry 2027-08 PTR 24.50 MRP 33.25'
+  });
+  assert.strictEqual(parsed.json.parsed.brand_name, 'Dolo 650');
+  assert.strictEqual(parsed.json.parsed.strips_qty, 20);
+  assert.strictEqual(parsed.json.parsed.rack_location, 'Rack A-1');
+  assert.strictEqual(parsed.json.parsed.batch_number, 'DL99');
+  assert.strictEqual(parsed.json.parsed.expiry_date, '2027-08-31');
+  assert.strictEqual(parsed.json.parsed.ptr_per_strip, 24.5);
+  assert.strictEqual(parsed.json.parsed.mrp_per_strip, 33.25);
+  const hindi = await req('POST', '/api/voice/parse', { transcript: 'Dolo 650 पंद्रह पत्ते रैक A-1 बैच DL24 एक्सपायरी अगस्त 2027 एमआरपी 34 पीटीआर 24' });
+  assert.strictEqual(hindi.json.parsed.strips_qty, 15);
+  assert.strictEqual(hindi.json.parsed.expiry_date, '2027-08-31');
+  assert.strictEqual(hindi.json.parsed.rack_location, 'Rack A-1');
+  const addedVoice = await req('POST', '/api/voice/add-stock', {
+    transcript: 'VoiceProbe Tab 4 strip rack B2 batch VP10 expiry 2027-12 PTR 11 MRP 19'
+  });
+  assert.strictEqual(addedVoice.json.ok, true);
+  const voiceMed = addedVoice.json.data.medicines.find(m => m.brand_name === 'VoiceProbe Tab');
+  assert(voiceMed, 'voice add should create the medicine');
+  const voiceBatch = addedVoice.json.data.batches.find(b => b.batch_number === 'VP10');
+  assert(voiceBatch && voiceBatch.strips_count === 4);
+
+  const before = await req('GET', '/api/bootstrap');
+  const telmi = before.json.data.batches.filter(b => b.medicine_id === 'med-11').reduce((s, b) => s + b.strips_count, 0);
+  const draft = await req('POST', '/api/vouchers', {
+    voucherType: 'SALE',
+    customerOrSupplier: 'Draft Patient',
+    paymentMode: 'CASH',
+    items: [{ medicineId: 'med-11', strips: 1, loose: 0, patientName: 'Draft Patient' }]
+  });
+  assert.strictEqual(draft.json.voucher.status, 'DRAFT');
+  const afterDraft = draft.json.data.batches.filter(b => b.medicine_id === 'med-11').reduce((s, b) => s + b.strips_count, 0);
+  assert.strictEqual(afterDraft, telmi, 'draft must not deduct stock');
+  const editedVoucher = await req('PUT', '/api/vouchers/' + draft.json.voucher.id, {
+    voucherType: 'SALE',
+    customerOrSupplier: 'Draft Patient',
+    items: [{ medicineId: 'med-11', strips: 2, loose: 0 }]
+  });
+  assert.strictEqual(editedVoucher.json.ok, true);
+  const finalV = await req('POST', '/api/vouchers/' + draft.json.voucher.id + '/finalize');
+  assert.strictEqual(finalV.json.voucher.status, 'FINALIZED');
+  const afterFinal = finalV.json.data.batches.filter(b => b.medicine_id === 'med-11').reduce((s, b) => s + b.strips_count, 0);
+  assert.strictEqual(afterFinal, telmi - 2, 'finalize should FEFO-deduct 2 strips');
+  const cancelled = await req('POST', '/api/vouchers', {
+    voucherType: 'SALE',
+    items: [{ medicineId: 'med-11', strips: 1, loose: 0 }]
+  });
+  const cancelRes = await req('POST', '/api/vouchers/' + cancelled.json.voucher.id + '/cancel');
+  assert.strictEqual(cancelRes.json.voucher.status, 'CANCELLED');
+
+  const slip = await req('POST', '/api/expiry-returns', { batchId: 'b-14', stripsReturned: 1 });
+  assert.strictEqual(slip.json.slip.status, 'PENDING');
+  const sent = await req('POST', '/api/expiry-returns/' + slip.json.slip.id + '/status', { status: 'SENT' });
+  assert.strictEqual(sent.json.slip.status, 'SENT');
+  const adjusted = await req('POST', '/api/expiry-returns/' + slip.json.slip.id + '/status', { status: 'ADJUSTED', creditNoteNo: 'CN-8821' });
+  assert.strictEqual(adjusted.json.slip.status, 'ADJUSTED');
+  assert.strictEqual(adjusted.json.slip.credit_note_no, 'CN-8821');
+  const claimed = adjusted.json.data.batches.find(b => b.id === 'b-14');
+  assert.strictEqual(claimed.is_return_claimed, 1);
+  assert.strictEqual(claimed.strips_count, 15);
+
+  const createdExp = await req('POST', '/api/expenses', {
+    category: 'SALARY', title: 'E2E Staff', employeeName: 'E2E Staff', amount: 100, expenseDate: '2026-10-29', note: 'test'
+  });
+  assert.strictEqual(createdExp.json.expense.category, 'SALARY');
+  const updatedExp = await req('PUT', '/api/expenses/' + createdExp.json.expense.id, { amount: 125, category: 'OTHER', title: 'E2E Other' });
+  assert.strictEqual(updatedExp.json.expense.amount, 125);
+  assert.strictEqual(updatedExp.json.expense.category, 'OTHER');
+  const removedExp = await req('DELETE', '/api/expenses/' + createdExp.json.expense.id);
+  assert.strictEqual(removedExp.json.ok, true);
+  assert(!removedExp.json.data.expenses.some(row => row.id === createdExp.json.expense.id));
+
+  const day0 = await req('GET', '/api/reports/pl?range=1d');
+  const salePl = await req('POST', '/api/sales', { medicineId: 'med-7', stripsSold: 1, looseTabletsSold: 0, patientName: 'PL Probe' });
+  assert.strictEqual(salePl.json.ok, true);
+  const billed = Number(salePl.json.sale.billed_amount);
+  const cogs = Number(salePl.json.sale.cogs_amount);
+  const today = day0.json.report.to;
+  await req('POST', '/api/expenses', { category: 'TRANSPORT', title: 'PL Transport', amount: 40, expenseDate: today, note: 'today' });
+  const day1 = await req('GET', '/api/reports/pl?range=1d');
+  assert.strictEqual(day1.json.report.range, '1d');
+  assert.ok(Math.abs(day1.json.report.totalSales - (day0.json.report.totalSales + billed)) < 0.02);
+  assert.ok(Math.abs(day1.json.report.cogs - (day0.json.report.cogs + cogs)) < 0.02);
+  assert.ok(Math.abs(day1.json.report.expenses - (day0.json.report.expenses + 40)) < 0.02);
+  assert.ok(Math.abs(day1.json.report.netProfit - (day1.json.report.grossMargin - day1.json.report.expenses)) < 0.02);
+  const week = await req('GET', '/api/reports/pl?range=1w');
+  const month = await req('GET', '/api/reports/pl?range=1m');
+  assert.ok(week.json.report.totalSales >= day1.json.report.totalSales);
+  assert.ok(month.json.report.totalSales >= week.json.report.totalSales);
+  assert.ok(month.json.report.expenses >= 12000, 'October salary should be inside the month');
+  assert.strictEqual(month.json.report.from.slice(8), '01');
+  const season = await req('GET', '/api/reports/seasonality');
+  assert.ok(season.json.months.length >= 6, 'expected several months of seasonality');
+  const october = season.json.months.find(m => m.month === '2026-10');
+  assert(october && october.top.some(row => /Azithral|Dolo|Allegra/.test(row.brand_name)));
+
+  const quota0 = await req('GET', '/api/ai/quota');
+  assert.strictEqual(quota0.json.quota.monthly_limit, 300);
+  let guard = 0;
+  let last = quota0.json.quota;
+  while (last.remaining > 0 && guard < 320) {
+    const scan = await req('POST', '/api/ai/scan', { rawText: 'Quota Probe ' + last.remaining + ' strip rack A1 batch Q1 expiry 2027-01 PTR 5 MRP 8' });
+    if (scan.status === 429) break;
+    assert.strictEqual(scan.status, 200, scan.json.error);
+    assert.strictEqual(scan.json.provider, 'offline');
+    last = scan.json.quota;
+    guard += 1;
+  }
+  const blocked = await req('POST', '/api/ai/scan', { rawText: 'should fail' });
+  assert.strictEqual(blocked.status, 429);
+  assert.strictEqual(blocked.json.quota.remaining, 0);
+  assert(String(blocked.json.error).includes('300'));
+
+  const cleared = await req('POST', '/api/demo/clear-zero');
+  assert.strictEqual(cleared.json.ok, true);
+  assert.strictEqual(cleared.json.data.medicines.length, 0);
+  assert.strictEqual(cleared.json.data.sales.length, 0);
+  assert.strictEqual(cleared.json.data.expenses.length, 0);
+  assert.ok(cleared.json.data.suppliers.length >= 3);
+  assert.strictEqual(cleared.json.data.settings.store_name, 'Akshay Medicose');
+  assert.strictEqual(cleared.json.data.aiQuota.calls_used, 0);
+  const seeded = await req('POST', '/api/reset-demo');
+  assert.ok(seeded.json.data.medicines.length >= 18);
+  assert.ok(seeded.json.data.expenses.length >= 5);
+  assert.ok(seeded.json.data.seasonality.months.length >= 6);
+  assert.strictEqual(seeded.json.data.settings.owner_pin, '1234');
+  console.log('   OK -> v3 auth, quota block, voice, vouchers, expiry, P/L, and demo reset.');
   console.log('\nALL E2E TESTS PASSED 100%!');
 }
 

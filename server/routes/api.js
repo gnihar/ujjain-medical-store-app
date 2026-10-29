@@ -6,6 +6,7 @@ const { db, seedDatabase } = require('../db/database');
 const { deductSaleFEFO, undoSaleEntry } = require('../services/fefoService');
 const modules = require('../services/storeModules');
 const { SAMPLE_TEMPLATES, runTesseractOnFile, parseRawTextToInvoice } = require('../services/ocrParserService');
+const v3 = require('../services/v3Service');
 
 const router = express.Router();
 
@@ -154,8 +155,16 @@ function getFullState() {
     whatsappReturnSummary,
     sales,
     audits,
-    sampleTemplates: SAMPLE_TEMPLATES
+    sampleTemplates: SAMPLE_TEMPLATES,
+    ...v3.snapshot()
   };
+}
+
+function sendErr(res, err) {
+  const status = err.status || 400;
+  const body = { ok: false, error: err.message };
+  if (err.extra) Object.assign(body, err.extra);
+  res.status(status).json(body);
 }
 
 router.get('/bootstrap', (_req, res) => {
@@ -203,6 +212,7 @@ router.put('/settings', (req, res) => {
       default_language || current.default_language,
       newPin
     );
+    v3.applySettings(current, req.body || {});
 
     res.json({ ok: true, data: getFullState() });
   } catch (err) {
@@ -927,6 +937,165 @@ router.get('/qr.svg', (req, res) => {
   const data = String(req.query.text || req.query.data || '').slice(0, 1800);
   if (!data) return res.status(400).type('text/plain').send('missing text');
   res.type('image/svg+xml').send(makeQrSvg(data));
+});
+
+router.post('/auth/unlock', (req, res) => {
+  try {
+    res.json({ ok: true, ...v3.unlock(req.body || {}) });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.get('/auth/webauthn/options', (_req, res) => {
+  res.json({ ok: true, publicKey: v3.webauthnOptions() });
+});
+
+router.post('/auth/webauthn/register', (req, res) => {
+  try {
+    res.json({ ok: true, ...v3.registerBiometric(req.body || {}), data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.get('/ai/quota', (_req, res) => {
+  res.json({ ok: true, quota: v3.getQuota() });
+});
+
+router.post('/ai/scan', async (req, res) => {
+  try {
+    const result = await v3.scanStock(req.body || {});
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/voice/parse', (req, res) => {
+  try {
+    const transcript = (req.body && (req.body.transcript || req.body.text)) || '';
+    res.json({ ok: true, parsed: v3.parseVoiceStockEntry(transcript) });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/voice/add-stock', (req, res) => {
+  try {
+    const transcript = (req.body && (req.body.transcript || req.body.text)) || '';
+    const result = v3.addVoiceStock(transcript);
+    res.json({ ok: true, ...result, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.get('/reports/pl', (req, res) => {
+  try {
+    const prorate = req.query.prorate === '1' || req.query.prorate === 'true';
+    res.json({ ok: true, report: v3.profitAndLoss(req.query.range || '1d', prorate) });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.get('/reports/seasonality', (_req, res) => {
+  try {
+    res.json({ ok: true, ...v3.seasonality() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/expenses', (req, res) => {
+  try {
+    const expense = v3.createExpense(req.body || {});
+    res.json({ ok: true, expense, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.put('/expenses/:id', (req, res) => {
+  try {
+    const expense = v3.updateExpense(req.params.id, req.body || {});
+    res.json({ ok: true, expense, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.delete('/expenses/:id', (req, res) => {
+  try {
+    const removed = v3.deleteExpense(req.params.id);
+    res.json({ ok: true, removed, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/vouchers', (req, res) => {
+  try {
+    const voucher = v3.saveVoucher(req.body || {});
+    res.json({ ok: true, voucher, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.put('/vouchers/:id', (req, res) => {
+  try {
+    const voucher = v3.saveVoucher(req.body || {}, req.params.id);
+    res.json({ ok: true, voucher, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/vouchers/:id/finalize', (req, res) => {
+  try {
+    const voucher = v3.finalizeVoucher(req.params.id);
+    res.json({ ok: true, voucher, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/vouchers/:id/cancel', (req, res) => {
+  try {
+    const voucher = v3.cancelVoucher(req.params.id);
+    res.json({ ok: true, voucher, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/expiry-returns', (req, res) => {
+  try {
+    const slip = v3.createExpiryReturn(req.body || {});
+    res.json({ ok: true, slip, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/expiry-returns/:id/status', (req, res) => {
+  try {
+    const slip = v3.updateExpiryStatus(req.params.id, req.body || {});
+    res.json({ ok: true, slip, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
+});
+
+router.post('/demo/clear-zero', (_req, res) => {
+  try {
+    v3.clearZero();
+    res.json({ ok: true, data: getFullState() });
+  } catch (err) {
+    sendErr(res, err);
+  }
 });
 
 router.post('/reset-demo', (_req, res) => {

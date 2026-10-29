@@ -1,7 +1,7 @@
 {
   "name": "ujjain-medical-store-app",
-  "version": "2.1.0",
-  "description": "Akshay Medicose v2.1 — bills, racks, shortbook, stockist schemes, counter sale, credit ledger, and monthly refills for Ujjain",
+  "version": "3.0.0",
+  "description": "Akshay Medicose v3.0 — role-separated counter, vouchers, expiry returns, owner margin, and Gemini scan quota for Ujjain",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",

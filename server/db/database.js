@@ -88,6 +88,24 @@ function ensureColumns() {
   addCol('inventory_batches', 'scheme_free_qty', 'scheme_free_qty INTEGER NOT NULL DEFAULT 0');
   addCol('purchase_line_items', 'scheme_buy_qty', 'scheme_buy_qty INTEGER NOT NULL DEFAULT 0');
   addCol('purchase_line_items', 'scheme_free_qty', 'scheme_free_qty INTEGER NOT NULL DEFAULT 0');
+  addCol('store_settings', 'admin_pattern', "admin_pattern TEXT NOT NULL DEFAULT '0-3-6-7-8'");
+  addCol('store_settings', 'biometric_credential_id', "biometric_credential_id TEXT DEFAULT 'bio-demo-akshay-1'");
+  addCol('store_settings', 'biometric_enabled', 'biometric_enabled INTEGER NOT NULL DEFAULT 1');
+  addCol('store_settings', 'tutorial_completed', 'tutorial_completed INTEGER NOT NULL DEFAULT 0');
+  addCol('store_settings', 'admin_lock_minutes', 'admin_lock_minutes INTEGER NOT NULL DEFAULT 15');
+  addCol('sales_entries', 'ptr_per_strip', 'ptr_per_strip REAL NOT NULL DEFAULT 0');
+  addCol('sales_entries', 'cogs_amount', 'cogs_amount REAL NOT NULL DEFAULT 0');
+  addCol('sales_entries', 'margin_amount', 'margin_amount REAL NOT NULL DEFAULT 0');
+  addCol('sales_entries', 'voucher_id', 'voucher_id TEXT');
+  const settingsRow = db.prepare('SELECT admin_pattern, biometric_credential_id FROM store_settings WHERE id = 1').get();
+  if (settingsRow) {
+    if (!settingsRow.admin_pattern) {
+      db.prepare(`UPDATE store_settings SET admin_pattern = '0-3-6-7-8' WHERE id = 1`).run();
+    }
+    if (!settingsRow.biometric_credential_id) {
+      db.prepare(`UPDATE store_settings SET biometric_credential_id = 'bio-demo-akshay-1', biometric_enabled = 1 WHERE id = 1`).run();
+    }
+  }
 }
 
 function backfillV2() {
@@ -227,6 +245,160 @@ function backfillV2() {
       'Requested at the counter — not on the shelf'
     );
   }
+  seedV3Demo();
+}
+
+function seedV3Demo() {
+  const hasMed = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='medicines'").get();
+  if (!hasMed) return;
+  if (db.prepare('SELECT COUNT(*) AS c FROM store_settings').get().c === 0) return;
+
+  const insertMed = db.prepare(`
+    INSERT INTO medicines (id, brand_name, salt_composition, manufacturer, pack_size_units, pack_label, rack_location, schedule_type, hsn_code, gst_percent, min_reorder_strips)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '3004', 12, ?)
+  `);
+  const extraMeds = [
+    ['med-15', 'Azithral 500 Tablet', 'Azithromycin 500mg', 'Alembic', 5, '1x5 Tabs', 'Rack A-3', 'H1', 8],
+    ['med-16', 'Allegra 120 Tablet', 'Fexofenadine 120mg', 'Sanofi', 10, '1x10 Tabs', 'Rack A-4', 'H', 8],
+    ['med-17', 'Electral ORS Powder', 'Oral Rehydration Salts', 'FDC', 1, '21.8g Sachet', 'Rack C-2', 'OTC', 20],
+    ['med-18', 'Shelcal 500 Tablet', 'Calcium 500mg + Vitamin D3', 'Torrent', 15, '1x15 Tabs', 'Rack C-2', 'OTC', 10]
+  ];
+  extraMeds.forEach(row => {
+    if (!db.prepare('SELECT id FROM medicines WHERE id = ?').get(row[0])) insertMed.run(...row);
+  });
+
+  const insertBatch = db.prepare(`
+    INSERT INTO inventory_batches (
+      id, medicine_id, supplier_id, purchase_invoice_id, batch_number, expiry_date,
+      pack_size_units, strips_count, loose_tablets_count, free_strips_received,
+      ptr_per_strip, mrp_per_strip, gst_percent
+    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, 0, ?, ?, 12)
+  `);
+  const extraBatches = [
+    ['b-16', 'med-15', 'sup-1', 'AZT04', addDaysIso(18), 5, 24, 89.5, 125],
+    ['b-17', 'med-16', 'sup-3', 'ALG88', addDaysIso(40), 10, 30, 92, 148],
+    ['b-18', 'med-17', 'sup-2', 'EL220', addDaysIso(120), 1, 48, 18, 22],
+    ['b-19', 'med-18', 'sup-2', 'SHL88', addDaysIso(70), 15, 22, 98, 138]
+  ];
+  extraBatches.forEach(row => {
+    if (!db.prepare('SELECT id FROM inventory_batches WHERE id = ?').get(row[0])) insertBatch.run(...row);
+  });
+
+  const insertSale = db.prepare(`
+    INSERT INTO sales_entries (
+      id, batch_id, medicine_id, brand_name, batch_number, rack_location, pack_size_units,
+      strips_sold, loose_tablets_sold, total_units_deducted, prev_strips, prev_loose_tablets,
+      new_strips, new_loose_tablets, billed_amount, ptr_per_strip, cogs_amount, margin_amount,
+      patient_name, sale_note, is_cancelled, payment_mode, sold_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, 0, ?, ?, ?, ?, ?, 'Seasonal demo history', 0, 'CASH', ?)
+  `);
+  const seasonal = [
+    ['sale-s-2026-05-dolo', 'b-7', 'med-6', 'Dolo 650 Tablet', 'DL552', 'Rack C-1', 15, 40, 40, 33.8, 24.5, '2026-05-18 11:00:00'],
+    ['sale-s-2026-05-ors', 'b-18', 'med-17', 'Electral ORS Powder', 'EL220', 'Rack C-2', 1, 30, 30, 22, 18, '2026-05-22 16:00:00'],
+    ['sale-s-2026-06-dolo', 'b-7', 'med-6', 'Dolo 650 Tablet', 'DL552', 'Rack C-1', 15, 55, 55, 33.8, 24.5, '2026-06-12 10:00:00'],
+    ['sale-s-2026-06-ors', 'b-18', 'med-17', 'Electral ORS Powder', 'EL220', 'Rack C-2', 1, 36, 36, 22, 18, '2026-06-20 15:00:00'],
+    ['sale-s-2026-07-dolo', 'b-7', 'med-6', 'Dolo 650 Tablet', 'DL552', 'Rack C-1', 15, 48, 48, 33.8, 24.5, '2026-07-08 12:00:00'],
+    ['sale-s-2026-07-aug', 'b-1', 'med-1', 'Augmentin 625 Duo Tab', 'AG624', 'Rack A-1', 10, 18, 18, 223, 162.5, '2026-07-19 13:00:00'],
+    ['sale-s-2026-08-aug', 'b-1', 'med-1', 'Augmentin 625 Duo Tab', 'AG624', 'Rack A-1', 10, 26, 26, 223, 162.5, '2026-08-11 11:30:00'],
+    ['sale-s-2026-08-dolo', 'b-7', 'med-6', 'Dolo 650 Tablet', 'DL552', 'Rack C-1', 15, 22, 22, 33.8, 24.5, '2026-08-25 17:00:00'],
+    ['sale-s-2026-09-azi', 'b-16', 'med-15', 'Azithral 500 Tablet', 'AZT04', 'Rack A-3', 5, 20, 20, 125, 89.5, '2026-09-09 10:20:00'],
+    ['sale-s-2026-09-pan', 'b-5', 'med-4', 'Pan-D Capsule PR', 'PD881', 'Rack B-1', 15, 14, 14, 210, 148, '2026-09-18 18:00:00'],
+    ['sale-s-2026-10-azi', 'b-16', 'med-15', 'Azithral 500 Tablet', 'AZT04', 'Rack A-3', 5, 28, 28, 125, 89.5, '2026-10-06 11:10:00'],
+    ['sale-s-2026-10-alg', 'b-17', 'med-16', 'Allegra 120 Tablet', 'ALG88', 'Rack A-4', 10, 18, 18, 148, 92, '2026-10-12 12:40:00'],
+    ['sale-s-2026-10-dolo', 'b-7', 'med-6', 'Dolo 650 Tablet', 'DL552', 'Rack C-1', 15, 16, 16, 33.8, 24.5, '2026-10-15 09:50:00']
+  ];
+  seasonal.forEach(row => {
+    if (db.prepare('SELECT id FROM sales_entries WHERE id = ?').get(row[0])) return;
+    const strips = row[7];
+    const units = strips * row[6];
+    const billed = Number((strips * row[9]).toFixed(2));
+    const cogs = Number((strips * row[10]).toFixed(2));
+    insertSale.run(
+      row[0], row[1], row[2], row[3], row[4], row[5], row[6], strips, units, strips, strips,
+      billed, row[10], cogs, Number((billed - cogs).toFixed(2)), 'Walk-in', row[11]
+    );
+  });
+
+  const todayStamp = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(new Date());
+  const todaySales = [
+    ['sale-today-dolo', 'b-7', 'med-6', 'Dolo 650 Tablet', 'DL552', 'Rack C-1', 15, 40, 33.8, 24.5, '10:15:00'],
+    ['sale-today-azi', 'b-16', 'med-15', 'Azithral 500 Tablet', 'AZT04', 'Rack A-3', 5, 12, 125, 89.5, '11:40:00'],
+    ['sale-today-alg', 'b-17', 'med-16', 'Allegra 120 Tablet', 'ALG88', 'Rack A-4', 10, 10, 148, 92, '16:05:00']
+  ];
+  todaySales.forEach(row => {
+    const strips = row[7];
+    const units = strips * row[6];
+    const billed = Number((strips * row[8]).toFixed(2));
+    const cogs = Number((strips * row[9]).toFixed(2));
+    const soldAt = todayStamp + ' ' + row[10];
+    if (db.prepare('SELECT id FROM sales_entries WHERE id = ?').get(row[0])) {
+      db.prepare('UPDATE sales_entries SET sold_at = ? WHERE id = ?').run(soldAt, row[0]);
+      return;
+    }
+    insertSale.run(
+      row[0], row[1], row[2], row[3], row[4], row[5], row[6], strips, units, strips, strips,
+      billed, row[9], cogs, Number((billed - cogs).toFixed(2)), 'Counter', soldAt
+    );
+  });
+
+  db.prepare(`
+    UPDATE sales_entries
+    SET ptr_per_strip = COALESCE((SELECT ptr_per_strip FROM inventory_batches b WHERE b.id = sales_entries.batch_id), 0)
+    WHERE IFNULL(ptr_per_strip, 0) = 0
+  `).run();
+  db.prepare(`
+    UPDATE sales_entries
+    SET cogs_amount = ROUND((total_units_deducted * 1.0 / CASE WHEN pack_size_units = 0 THEN 1 ELSE pack_size_units END) * ptr_per_strip, 2),
+        margin_amount = ROUND(billed_amount - ((total_units_deducted * 1.0 / CASE WHEN pack_size_units = 0 THEN 1 ELSE pack_size_units END) * ptr_per_strip), 2)
+    WHERE IFNULL(cogs_amount, 0) = 0 AND IFNULL(ptr_per_strip, 0) > 0
+  `).run();
+
+  if (!db.prepare("SELECT id FROM expenses WHERE id = 'exp-salary-rahul'").get()) {
+    const insertExp = db.prepare(`
+      INSERT INTO expenses (id, category, title, employee_name, amount, expense_date, payment_mode, note)
+      VALUES (?, ?, ?, ?, ?, ?, 'CASH', ?)
+    `);
+    insertExp.run('exp-salary-rahul', 'SALARY', 'Rahul (Counter Staff)', 'Rahul', 12000, '2026-10-01', 'October salary');
+    insertExp.run('exp-salary-deepak', 'SALARY', 'Deepak (Helper)', 'Deepak', 6000, '2026-10-01', 'October salary');
+    insertExp.run('exp-rent-oct', 'RENT', 'Shop Rent (Freeganj)', '', 8000, '2026-10-05', 'October rent');
+    insertExp.run('exp-power-oct', 'ELECTRICITY', 'MPPKVVCL Bill', '', 1450, '2026-10-03', 'Fridge and shop');
+    insertExp.run('exp-transport-oct', 'TRANSPORT', 'Wholesaler pickup', '', 350, '2026-10-21', 'Dewas Gate trip');
+    insertExp.run('exp-salary-sep', 'SALARY', 'Rahul (Counter Staff)', 'Rahul', 12000, '2026-09-01', 'September salary');
+    insertExp.run('exp-rent-sep', 'RENT', 'Shop Rent (Freeganj)', '', 8000, '2026-09-05', 'September rent');
+  }
+
+  if (!db.prepare("SELECT id FROM vouchers WHERE id = 'vch-demo-1'").get()) {
+    db.prepare(`
+      INSERT INTO vouchers (
+        id, voucher_number, voucher_type, status, customer_or_supplier, customer_phone,
+        items_json, total_amount, estimated_margin, payment_mode, created_by_role, note, created_at
+      ) VALUES ('vch-demo-1', 'VCH-1042', 'SALE', 'DRAFT', 'Rajesh Sharma', '9826011111', ?, 67.6, 18.6, 'CASH', 'EMPLOYEE', 'Kaccha parcha at the counter', '2026-10-27 18:10:00')
+    `).run(JSON.stringify([{ medicineId: 'med-6', strips: 2, loose: 0, patientName: 'Rajesh Sharma' }]));
+  }
+
+  if (!db.prepare("SELECT id FROM expiry_returns WHERE id = 'ret-demo-1'").get()) {
+    db.prepare(`
+      INSERT INTO expiry_returns (
+        id, return_slip_no, batch_id, medicine_id, brand_name, batch_number, expiry_date, rack_location,
+        supplier_id, supplier_name, supplier_phone, strips_returned, loose_returned, ptr_per_strip, ptr_value,
+        return_reason, status, credit_note_no
+      ) VALUES (
+        'ret-demo-1', 'RET-201', 'b-9', 'med-8', 'Glycomet-GP 2 Tablet', 'GG108', ?, 'Rack B-4',
+        'sup-3', 'Shipra Drug House, Ujjain', '+91 99260 77812', 2, 0, 124, 248,
+        'Near Expiry (<=30d)', 'SENT', ''
+      )
+    `).run(addDaysIso(26));
+  }
+
+  const month = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit' }).format(new Date());
+  const usage = db.prepare('SELECT year_month FROM ai_usage_monthly WHERE year_month = ?').get(month);
+  if (!usage) {
+    db.prepare(`
+      INSERT INTO ai_usage_monthly (year_month, calls_used, monthly_limit) VALUES (?, 16, 300)
+    `).run(month);
+  }
 }
 
 function seedDatabase(forceReset = false) {
@@ -239,6 +411,10 @@ function seedDatabase(forceReset = false) {
       DELETE FROM credit_transactions;
       DELETE FROM refill_schedules;
       DELETE FROM shortbook_items;
+      DELETE FROM expiry_returns;
+      DELETE FROM vouchers;
+      DELETE FROM expenses;
+      DELETE FROM ai_usage_monthly;
       DELETE FROM purchase_line_items;
       DELETE FROM customer_accounts;
       DELETE FROM stock_audits;
