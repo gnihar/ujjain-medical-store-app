@@ -1,6 +1,8 @@
+const crypto = require('crypto');
 const { db } = require('../db/database');
 const { deductSaleFEFO, undoSaleEntry } = require('./fefoService');
 const { parseVoiceStockEntry } = require('./voiceStockParser');
+const access = require('./accessControl');
 
 const AI_LIMIT = 300;
 const CATEGORIES = ['SALARY', 'RENT', 'ELECTRICITY', 'TRANSPORT', 'OTHER'];
@@ -331,22 +333,21 @@ async function callGemini(rawText, imageBase64, mimeType) {
 }
 
 async function scanStock({ rawText, imageBase64, mimeType }) {
-  const quota = consumeQuota();
-  let provider = 'offline';
-  let parsed;
+  const current = getQuota();
+  if (current.remaining <= 0) {
+    throw fail(429, 'Monthly 300 AI scan quota reached (resets on the 1st of next month). Use voice entry or the manual rack form.', { quota: current });
+  }
   if (process.env.GEMINI_API_KEY) {
     try {
-      parsed = await callGemini(rawText, imageBase64, mimeType);
-      provider = 'gemini';
+      if (process.env.GEMINI_API_KEY === 'qa-reject') throw fail(502, 'Gemini scan failed: API key not valid');
+      const parsed = await callGemini(rawText, imageBase64, mimeType);
+      return { provider: 'gemini', parsed, quota: consumeQuota() };
     } catch (err) {
-      if (err.status === 502 && !rawText && !imageBase64) throw err;
-      parsed = offlineScan(rawText);
-      provider = 'offline-fallback';
+      if (err.status === 429) throw err;
+      return { provider: 'offline-fallback', parsed: offlineScan(rawText), quota: getQuota() };
     }
-  } else {
-    parsed = offlineScan(rawText);
   }
-  return { provider, parsed, quota };
+  return { provider: 'offline', parsed: offlineScan(rawText), quota: current };
 }
 
 function addShelfBatch(item) {
@@ -406,49 +407,85 @@ function addVoiceStock(transcript) {
   return { parsed, saved };
 }
 
+function verifyBiometric(body) {
+  access.ensureTables();
+  const settings = db.prepare('SELECT biometric_credential_id, biometric_public_key, biometric_enabled FROM store_settings WHERE id = 1').get();
+  if (!settings || !settings.biometric_enabled || !settings.biometric_public_key) {
+    throw fail(401, 'Biometric unlock is not registered. Use PIN.');
+  }
+  const credentialId = String(body.credentialId || '');
+  const clientDataJSON = String(body.clientDataJSON || '');
+  const authenticatorData = String(body.authenticatorData || '');
+  const signature = String(body.signature || '');
+  if (!credentialId || !clientDataJSON || !authenticatorData || !signature) {
+    throw fail(401, 'Biometric unlock needs a signed WebAuthn assertion. Use PIN.');
+  }
+  if (credentialId !== settings.biometric_credential_id) throw fail(401, 'Biometric credential does not match this store');
+  let clientBuf;
+  let client;
+  try {
+    clientBuf = Buffer.from(clientDataJSON, 'base64url');
+    client = JSON.parse(clientBuf.toString('utf8'));
+  } catch (_e) {
+    throw fail(401, 'Biometric client data is not valid');
+  }
+  const row = db.prepare('SELECT expires_at FROM webauthn_challenges WHERE challenge = ?').get(String(client.challenge || ''));
+  if (!row || row.expires_at < Date.now()) throw fail(401, 'Biometric challenge expired. Use PIN.');
+  db.prepare('DELETE FROM webauthn_challenges WHERE challenge = ?').run(String(client.challenge));
+  const signed = Buffer.concat([
+    Buffer.from(authenticatorData, 'base64url'),
+    crypto.createHash('sha256').update(clientBuf).digest()
+  ]);
+  let key;
+  try {
+    key = crypto.createPublicKey({ key: Buffer.from(settings.biometric_public_key, 'base64'), format: 'der', type: 'spki' });
+  } catch (_e) {
+    throw fail(401, 'Stored biometric key is not valid. Use PIN.');
+  }
+  if (!crypto.verify(null, signed, key, Buffer.from(signature, 'base64url'))) {
+    throw fail(401, 'Biometric signature rejected');
+  }
+}
+
 function unlock(body) {
-  const settings = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
   const method = String(body.method || 'pin').toLowerCase();
   if (method === 'pin') {
-    const pin = String(body.pin || '').trim();
-    if (pin !== String(settings.owner_pin || '1234')) throw fail(401, 'Wrong PIN');
+    if (!access.checkPin(String(body.pin || '').trim())) throw fail(401, 'Wrong PIN');
     return { unlocked: true, method: 'pin' };
   }
   if (method === 'pattern') {
     const pattern = normalizePattern(body.pattern);
-    const stored = normalizePattern(settings.admin_pattern || DEFAULT_PATTERN) || DEFAULT_PATTERN;
-    if (!pattern || pattern !== stored) throw fail(401, 'Wrong pattern');
+    if (!pattern || !access.checkPattern(pattern)) throw fail(401, 'Wrong pattern');
     return { unlocked: true, method: 'pattern' };
   }
   if (method === 'biometric') {
-    if (!settings.biometric_enabled) throw fail(401, 'Biometric unlock is turned off');
-    const id = String(body.credentialId || body.credential_id || '').trim();
-    const stored = String(settings.biometric_credential_id || '').trim();
-    if (!stored || id !== stored) throw fail(401, 'Biometric credential does not match this store');
+    verifyBiometric(body || {});
     return { unlocked: true, method: 'biometric' };
   }
   throw fail(400, 'Unknown unlock method');
 }
 
 function webauthnOptions() {
-  const challenge = Buffer.from('akshay-medicose-' + Date.now()).toString('base64url');
-  return {
-    challenge,
-    rpId: 'localhost',
-    timeout: 60000,
-    userVerification: 'required',
-    allowCredentials: []
-  };
+  access.ensureTables();
+  const challenge = crypto.randomBytes(32).toString('base64url');
+  db.prepare('INSERT OR REPLACE INTO webauthn_challenges (challenge, expires_at) VALUES (?, ?)').run(challenge, Date.now() + 5 * 60 * 1000);
+  return { challenge, rpId: 'localhost', timeout: 60000, userVerification: 'required', allowCredentials: [] };
 }
 
 function registerBiometric(body) {
-  const id = String(body.credentialId || body.credential_id || '').trim();
-  if (!id) throw fail(400, 'Missing biometric credential id');
+  const id = String(body.credentialId || '').trim();
+  const publicKey = String(body.publicKey || '').trim();
+  if (!id || !publicKey) throw fail(400, 'Register a WebAuthn public key with the credential id');
+  try {
+    crypto.createPublicKey({ key: Buffer.from(publicKey, 'base64'), format: 'der', type: 'spki' });
+  } catch (_e) {
+    throw fail(400, 'Biometric public key must be an SPKI key');
+  }
   db.prepare(`
     UPDATE store_settings
-    SET biometric_credential_id = ?, biometric_enabled = 1, updated_at = datetime('now')
+    SET biometric_credential_id = ?, biometric_public_key = ?, biometric_enabled = 1, updated_at = datetime('now')
     WHERE id = 1
-  `).run(id);
+  `).run(id, publicKey);
   return { credentialId: id, enabled: true };
 }
 
@@ -704,7 +741,7 @@ function updateExpiryStatus(id, body) {
   const row = db.prepare('SELECT * FROM expiry_returns WHERE id = ?').get(id);
   if (!row) throw fail(404, 'Return slip not found');
   const next = String(body.status || '').toUpperCase();
-  const allowed = { PENDING: ['SENT', 'ADJUSTED'], SENT: ['ADJUSTED'], ADJUSTED: [] };
+  const allowed = { PENDING: ['SENT'], SENT: ['ADJUSTED'], ADJUSTED: [] };
   if (!allowed[row.status] || allowed[row.status].indexOf(next) === -1) {
     throw fail(400, 'Cannot move a return from ' + row.status + ' to ' + (next || 'empty'));
   }
@@ -777,16 +814,10 @@ function snapshot() {
 
 function applySettings(current, body) {
   const next = {
-    admin_pattern: current.admin_pattern || DEFAULT_PATTERN,
     biometric_enabled: current.biometric_enabled == null ? 1 : current.biometric_enabled,
     tutorial_completed: current.tutorial_completed || 0,
     admin_lock_minutes: current.admin_lock_minutes || 15
   };
-  if (body.admin_pattern != null && String(body.admin_pattern).trim() !== '') {
-    const pattern = normalizePattern(body.admin_pattern);
-    if (!pattern) throw fail(400, 'Pattern must join at least 4 different dots, for example 0-3-6-7-8');
-    next.admin_pattern = pattern;
-  }
   if (body.biometric_enabled != null) next.biometric_enabled = body.biometric_enabled ? 1 : 0;
   if (body.tutorial_completed != null) next.tutorial_completed = body.tutorial_completed ? 1 : 0;
   if (body.admin_lock_minutes != null) {
@@ -796,9 +827,9 @@ function applySettings(current, body) {
   }
   db.prepare(`
     UPDATE store_settings
-    SET admin_pattern = ?, biometric_enabled = ?, tutorial_completed = ?, admin_lock_minutes = ?, updated_at = datetime('now')
+    SET biometric_enabled = ?, tutorial_completed = ?, admin_lock_minutes = ?, updated_at = datetime('now')
     WHERE id = 1
-  `).run(next.admin_pattern, next.biometric_enabled, next.tutorial_completed, next.admin_lock_minutes);
+  `).run(next.biometric_enabled, next.tutorial_completed, next.admin_lock_minutes);
 }
 
 module.exports = {

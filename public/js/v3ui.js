@@ -153,7 +153,7 @@
             '<div class="muted">' + row.strips_returned + ' ' + b.esc(b.t('stripsUnit')) + ' · ' + b.esc(row.status) + (row.credit_note_no ? ' · ' + b.esc(row.credit_note_no) : '') + '</div></div>' +
             '<div class="actions">' +
             (row.status === 'PENDING' ? '<button type="button" class="btn small" data-ret="' + b.esc(row.id) + '" data-next="SENT">' + b.esc(b.t('markSent')) + '</button>' : '') +
-            (row.status === 'SENT' || row.status === 'PENDING' ? '<button type="button" class="btn small primary" data-ret="' + b.esc(row.id) + '" data-next="ADJUSTED">' + b.esc(b.t('markAdjusted')) + '</button>' : '') +
+            (row.status === 'SENT' ? '<button type="button" class="btn small primary" data-ret="' + b.esc(row.id) + '" data-next="ADJUSTED">' + b.esc(b.t('markAdjusted')) + '</button>' : '') +
             '</div></article>';
         }).join('') : '<div class="empty">' + b.esc(b.t('noSlips')) + '</div>') +
         '</section></div>';
@@ -385,10 +385,10 @@
       }
     }
 
-    function grant() {
+    async function grant() {
       b.closeModal();
+      try { b.applyState(await StoreEngine.bootstrap()); } catch (_e) {}
       b.setOwner(true);
-      try { sessionStorage.setItem('am-owner', '1'); } catch (_e) {}
       b.setView('adm-pl');
       b.setSub('margin');
       b.toast(b.t('unlocked'));
@@ -475,32 +475,34 @@
       };
     }
 
+    function b64url(buf) {
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
     async function verifyBio() {
-      const hint = document.getElementById('bioHint');
-      const settings = (b.state() && b.state().settings) || {};
       try {
-        if (window.PublicKeyCredential && navigator.credentials && navigator.credentials.get) {
-          const optsRes = await fetch('/api/auth/webauthn/options');
-          const opts = await optsRes.json();
-          const challenge = Uint8Array.from(atob(opts.publicKey.challenge.replace(/-/g, '+').replace(/_/g, '/')), function (c) { return c.charCodeAt(0); });
-          const cred = await navigator.credentials.get({
-            publicKey: { challenge: challenge, timeout: 60000, userVerification: 'required', rpId: location.hostname }
-          });
-          const raw = new Uint8Array(cred.rawId);
-          let id = btoa(String.fromCharCode.apply(null, raw)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-          await StoreEngine.unlock({ method: 'biometric', credentialId: id });
-          grant();
-          return;
-        }
-      } catch (_e) { /* fall through to the labelled demo credential */ }
-      if (hint) hint.textContent = b.t('bioFallback');
-      try {
-        await StoreEngine.unlock({ method: 'biometric', credentialId: settings.biometric_credential_id || 'bio-demo-akshay-1' });
+        if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.get) throw new Error('unavailable');
+        const optsRes = await fetch('/api/auth/webauthn/options', { credentials: 'include' });
+        const opts = await optsRes.json();
+        const challenge = Uint8Array.from(atob(String(opts.publicKey.challenge).replace(/-/g, '+').replace(/_/g, '/')), function (c) { return c.charCodeAt(0); });
+        const cred = await navigator.credentials.get({
+          publicKey: { challenge: challenge, timeout: 60000, userVerification: 'required', rpId: location.hostname }
+        });
+        await StoreEngine.unlock({
+          method: 'biometric',
+          credentialId: b64url(cred.rawId),
+          clientDataJSON: b64url(cred.response.clientDataJSON),
+          authenticatorData: b64url(cred.response.authenticatorData),
+          signature: b64url(cred.response.signature)
+        });
         grant();
-      } catch (err) {
+      } catch (_e) {
         authTab = 'pin';
         paintAuth();
-        authError((err && err.message) || b.t('bioFallback'));
+        authError(b.t('bioFallback'));
       }
     }
 
@@ -779,7 +781,8 @@
       if (waRet) waRet.onclick = function () {
         const group = (b.state().whatsappReturnSummary || [])[0];
         if (!group) return b.toast(b.t('noExpiry'));
-        window.open(b.wa(group.supplierPhone, group.whatsappText), '_blank');
+        const text = b.returnText ? b.returnText(group) : '';
+        window.open(b.wa(group.supplierPhone, text), '_blank');
       };
       document.querySelectorAll('[data-ret]').forEach(function (btn) {
         btn.onclick = function () {

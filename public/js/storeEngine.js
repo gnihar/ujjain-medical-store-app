@@ -202,15 +202,57 @@
       const s = localStorage.getItem(STORAGE_KEY);
       if (s) return ensureV3(JSON.parse(s));
     } catch (_e) {}
-    const init = getInitialLocalRaw();
-    saveRaw(init);
-    return init;
+    return ensureV3(getInitialLocalRaw());
   }
+
+  let adminToken = '';
+  let localAdmin = false;
 
   function saveRaw(raw) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(raw));
+      const copy = JSON.parse(JSON.stringify(raw));
+      if (copy.settings) {
+        if (copy.settings.owner_pin_hash) delete copy.settings.owner_pin;
+        if (copy.settings.admin_pattern_hash) delete copy.settings.admin_pattern;
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(copy));
     } catch (_e) {}
+  }
+
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    const headers = Object.assign({}, opts.headers || {});
+    if (adminToken) headers.Authorization = 'Bearer ' + adminToken;
+    opts.headers = headers;
+    opts.credentials = 'include';
+    const netFetch = globalThis.fetch.bind(globalThis);
+    return netFetch(url, opts);
+  }
+
+  async function pbkdf2(secret, saltBytes) {
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(secret)), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: saltBytes, iterations: 100000, hash: 'SHA-256' }, key, 256);
+    const arr = new Uint8Array(bits);
+    let bin = '';
+    for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+    return btoa(bin);
+  }
+
+  async function sealSecrets(raw) {
+    raw.settings = raw.settings || {};
+    if (raw.settings.owner_pin && !raw.settings.owner_pin_hash && crypto.subtle) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      raw.settings.owner_pin_salt = btoa(String.fromCharCode.apply(null, salt));
+      raw.settings.owner_pin_hash = await pbkdf2(raw.settings.owner_pin, salt);
+      delete raw.settings.owner_pin;
+    }
+    if (raw.settings.admin_pattern && !raw.settings.admin_pattern_hash && crypto.subtle) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      raw.settings.admin_pattern_salt = btoa(String.fromCharCode.apply(null, salt));
+      raw.settings.admin_pattern_hash = await pbkdf2(raw.settings.admin_pattern, salt);
+      delete raw.settings.admin_pattern;
+    }
+    return raw;
   }
 
   function phoneDigits(input) {
@@ -642,18 +684,39 @@
     async bootstrap() {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/bootstrap');
+          const res = await apiFetch('/api/bootstrap');
           const json = await res.json();
           if (json.ok) return json.data;
         } catch (_e) {}
       }
-      return computeFullStateFromRaw(loadRaw());
+      const raw = loadRaw();
+      await sealSecrets(raw);
+      saveRaw(raw);
+      return computeFullStateFromRaw(raw);
+    },
+
+    async lock() {
+      adminToken = '';
+      localAdmin = false;
+      if (isHttpBackend) {
+        try { await apiFetch('/api/auth/lock', { method: 'POST' }); } catch (_e) {}
+      }
+    },
+
+    async adminSession() {
+      if (!isHttpBackend) return { admin: !!localAdmin };
+      try {
+        const res = await apiFetch('/api/auth/session');
+        return await res.json();
+      } catch (_e) {
+        return { admin: false };
+      }
     },
 
     async updateSettings(payload) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/settings', {
+          const res = await apiFetch('/api/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -694,7 +757,7 @@
           const fd = new FormData();
           if (file) fd.append('billPhoto', file);
           if (templateId) fd.append('templateId', templateId);
-          const res = await fetch('/api/ocr/parse', { method: 'POST', body: fd });
+          const res = await apiFetch('/api/ocr/parse', { method: 'POST', body: fd });
           const json = await res.json();
           if (json.ok) {
             if (photoDataUrl && file) json.parsed.billPhotoUrl = photoDataUrl;
@@ -755,7 +818,7 @@
     async saveInvoice(payload) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/invoices', {
+          const res = await apiFetch('/api/invoices', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -852,7 +915,7 @@
     async quickRackOnboard(payload) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/onboarding/quick-rack', {
+          const res = await apiFetch('/api/onboarding/quick-rack', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -905,7 +968,7 @@
     async recordSale(payload) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/sales', {
+          const res = await apiFetch('/api/sales', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -1020,7 +1083,7 @@
       }
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/sales/' + saleId + '/customer', {
+          const res = await apiFetch('/api/sales/' + saleId + '/customer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1063,7 +1126,7 @@
     async undoSale(saleId) {
       if (isHttpBackend) {
         try {
-          const res = await fetch(`/api/sales/${saleId}/undo`, { method: 'POST' });
+          const res = await apiFetch(`/api/sales/${saleId}/undo`, { method: 'POST' });
           const json = await res.json();
           if (json.ok) return json.data;
         } catch (_e) {}
@@ -1108,7 +1171,7 @@
     async recordAudit(payload) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/audits', {
+          const res = await apiFetch('/api/audits', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -1150,7 +1213,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/invoices/' + id + '/payment', {
+          const res = await apiFetch('/api/invoices/' + id + '/payment', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1173,7 +1236,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/shortbook', {
+          const res = await apiFetch('/api/shortbook', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1203,7 +1266,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/shortbook/mark', {
+          const res = await apiFetch('/api/shortbook/mark', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1230,7 +1293,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/credit/payment', {
+          const res = await apiFetch('/api/credit/payment', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1259,7 +1322,7 @@
     async notifyRefill(id) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/refills/' + id + '/notified', { method: 'POST' });
+          const res = await apiFetch('/api/refills/' + id + '/notified', { method: 'POST' });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not update the refill');
           return json.data;
@@ -1278,7 +1341,7 @@
     async fulfillRefill(id) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/refills/' + id + '/bill', { method: 'POST' });
+          const res = await apiFetch('/api/refills/' + id + '/bill', { method: 'POST' });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not bill the refill');
           return json.data;
@@ -1313,7 +1376,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch(id ? '/api/suppliers/' + id : '/api/suppliers', {
+          const res = await apiFetch(id ? '/api/suppliers/' + id : '/api/suppliers', {
             method: id ? 'PUT' : 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -1356,7 +1419,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch(body.id ? '/api/offers/' + body.id : '/api/offers', {
+          const res = await apiFetch(body.id ? '/api/offers/' + body.id : '/api/offers', {
             method: body.id ? 'PUT' : 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
@@ -1390,7 +1453,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/offers/' + id + '/shortbook', {
+          const res = await apiFetch('/api/offers/' + id + '/shortbook', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1418,7 +1481,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/refills', {
+          const res = await apiFetch('/api/refills', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1447,26 +1510,35 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/auth/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const res = await apiFetch('/api/auth/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Unlock failed');
+          if (json.token) adminToken = json.token;
+          localAdmin = true;
           return json;
         } catch (err) {
           if (err && err.message && !/fetch|network/i.test(err.message)) throw err;
         }
       }
       const raw = ensureV3(loadRaw());
+      await sealSecrets(raw);
+      saveRaw(raw);
       const method = String(body.method || 'pin');
-      if (method === 'pin' && String(body.pin) !== String(raw.settings.owner_pin)) throw new Error('Wrong PIN');
-      if (method === 'pattern' && String(body.pattern) !== String(raw.settings.admin_pattern)) throw new Error('Wrong pattern');
-      if (method === 'biometric' && String(body.credentialId) !== String(raw.settings.biometric_credential_id)) throw new Error('Biometric credential does not match this store');
+      if (method === 'biometric') throw new Error('Biometric unlock needs a signed WebAuthn assertion. Use PIN.');
+      const saltB64 = method === 'pattern' ? raw.settings.admin_pattern_salt : raw.settings.owner_pin_salt;
+      const hash = method === 'pattern' ? raw.settings.admin_pattern_hash : raw.settings.owner_pin_hash;
+      const secret = method === 'pattern' ? body.pattern : body.pin;
+      const salt = Uint8Array.from(atob(saltB64 || ''), c => c.charCodeAt(0));
+      const got = hash ? await pbkdf2(secret, salt) : '';
+      if (!hash || got !== hash) throw new Error(method === 'pattern' ? 'Wrong pattern' : 'Wrong PIN');
+      localAdmin = true;
       return { ok: true, unlocked: true, method };
     },
 
     async registerBiometric(credentialId) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/auth/webauthn/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
+          const res = await apiFetch('/api/auth/webauthn/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not register biometrics');
           return json.data;
@@ -1485,7 +1557,7 @@
       body = body || {};
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/ai/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const res = await apiFetch('/api/ai/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
           const json = await res.json();
           if (res.status === 429 || !json.ok) {
             const err = new Error(json.error || 'Scan failed');
@@ -1519,7 +1591,7 @@
     async parseVoice(transcript) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/voice/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }) });
+          const res = await apiFetch('/api/voice/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }) });
           const json = await res.json();
           if (json.ok) return json.parsed;
         } catch (_e) {}
@@ -1531,7 +1603,7 @@
     async addVoiceStock(transcript) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/voice/add-stock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }) });
+          const res = await apiFetch('/api/voice/add-stock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }) });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not add spoken stock');
           return json.data;
@@ -1555,7 +1627,7 @@
     async saveVoucher(body, id) {
       if (isHttpBackend) {
         try {
-          const res = await fetch(id ? '/api/vouchers/' + id : '/api/vouchers', {
+          const res = await apiFetch(id ? '/api/vouchers/' + id : '/api/vouchers', {
             method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1589,7 +1661,7 @@
     async finalizeVoucher(id) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/vouchers/' + id + '/finalize', { method: 'POST' });
+          const res = await apiFetch('/api/vouchers/' + id + '/finalize', { method: 'POST' });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not finalize the voucher');
           return json.data;
@@ -1639,7 +1711,7 @@
     async cancelVoucher(id) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/vouchers/' + id + '/cancel', { method: 'POST' });
+          const res = await apiFetch('/api/vouchers/' + id + '/cancel', { method: 'POST' });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not cancel the voucher');
           return json.data;
@@ -1658,7 +1730,7 @@
     async saveExpense(body, id) {
       if (isHttpBackend) {
         try {
-          const res = await fetch(id ? '/api/expenses/' + id : '/api/expenses', {
+          const res = await apiFetch(id ? '/api/expenses/' + id : '/api/expenses', {
             method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
           });
           const json = await res.json();
@@ -1683,7 +1755,7 @@
     async deleteExpense(id) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/expenses/' + id, { method: 'DELETE' });
+          const res = await apiFetch('/api/expenses/' + id, { method: 'DELETE' });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not delete the expense');
           return json.data;
@@ -1700,7 +1772,7 @@
     async createExpiryReturn(body) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/expiry-returns', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const res = await apiFetch('/api/expiry-returns', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not create the return slip');
           return json.data;
@@ -1725,7 +1797,7 @@
     async updateExpiryReturn(id, body) {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/expiry-returns/' + id + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const res = await apiFetch('/api/expiry-returns/' + id + '/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
           const json = await res.json();
           if (!json.ok) throw new Error(json.error || 'Could not update the return');
           return json.data;
@@ -1752,7 +1824,7 @@
     async clearZero() {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/demo/clear-zero', { method: 'POST' });
+          const res = await apiFetch('/api/demo/clear-zero', { method: 'POST' });
           const json = await res.json();
           if (json.ok) return json.data;
         } catch (_e) {}
@@ -1775,7 +1847,7 @@
     async resetDemo() {
       if (isHttpBackend) {
         try {
-          const res = await fetch('/api/reset-demo', { method: 'POST' });
+          const res = await apiFetch('/api/reset-demo', { method: 'POST' });
           const json = await res.json();
           if (json.ok) return json.data;
         } catch (_e) {}

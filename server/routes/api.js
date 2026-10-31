@@ -7,8 +7,19 @@ const { deductSaleFEFO, undoSaleEntry } = require('../services/fefoService');
 const modules = require('../services/storeModules');
 const { SAMPLE_TEMPLATES, runTesseractOnFile, parseRawTextToInvoice } = require('../services/ocrParserService');
 const v3 = require('../services/v3Service');
+const access = require('../services/accessControl');
 
 const router = express.Router();
+const ADMIN_PATH = /^\/(reports\/pl|reports\/seasonality|expenses)(\/|$)/;
+
+router.use((req, res, next) => {
+  if (ADMIN_PATH.test(req.path) && !access.isAdmin(req)) {
+    return res.status(403).json({ ok: false, error: 'Admin session required' });
+  }
+  const send = res.json.bind(res);
+  res.json = (payload) => send(res.locals.fullAccess || access.isAdmin(req) ? payload : access.redact(payload));
+  next();
+});
 
 const uploadDir = path.join(__dirname, '../../public/uploads/bills');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -30,7 +41,11 @@ function computeDaysToExpiry(expiryDateStr) {
 }
 
 function getFullState() {
+  access.ensureTables();
   const settings = db.prepare('SELECT * FROM store_settings WHERE id = 1').get();
+  ['owner_pin', 'owner_pin_hash', 'owner_pin_salt', 'admin_pattern', 'admin_pattern_hash', 'admin_pattern_salt', 'biometric_public_key', 'biometric_credential_id'].forEach(key => {
+    if (settings) delete settings[key];
+  });
   const suppliers = db.prepare('SELECT * FROM suppliers ORDER BY name ASC').all();
   const medicines = db.prepare('SELECT * FROM medicines ORDER BY brand_name ASC').all();
   const invoices = db.prepare('SELECT * FROM purchase_invoices ORDER BY created_at DESC').all();
@@ -183,13 +198,20 @@ router.put('/settings', (req, res) => {
       ? Math.min(365, Math.max(5, parseInt(expiry_alert_days, 10) || 60))
       : current.expiry_alert_days;
 
-    let newPin = current.owner_pin || '1234';
+    const body = req.body || {};
+    const secretTouch = ['owner_pin', 'admin_pattern', 'biometric_enabled', 'admin_lock_minutes'].some(key => body[key] !== undefined && body[key] !== null && String(body[key]).trim() !== '');
+    if (secretTouch && !access.isAdmin(req)) {
+      return res.status(403).json({ ok: false, error: 'Admin session required' });
+    }
     if (owner_pin !== undefined && owner_pin !== null && String(owner_pin).trim() !== '') {
       const pin = String(owner_pin).trim();
-      if (!/^\d{4}$/.test(pin)) {
-        throw new Error('Owner PIN must be 4 digits');
-      }
-      newPin = pin;
+      if (!/^\d{4}$/.test(pin)) throw new Error('Owner PIN must be 4 digits');
+      access.setPin(pin);
+    }
+    if (body.admin_pattern) {
+      const pattern = String(body.admin_pattern).trim();
+      if (!/^(?:[0-8]-){3,}[0-8]$/.test(pattern)) throw new Error('Pattern must join at least 4 different dots, for example 0-3-6-7-8');
+      access.setPattern(pattern);
     }
 
     db.prepare(`
@@ -200,7 +222,6 @@ router.put('/settings', (req, res) => {
           drug_license_no = ?,
           gstin = ?,
           default_language = ?,
-          owner_pin = ?,
           updated_at = datetime('now')
       WHERE id = 1
     `).run(
@@ -209,8 +230,7 @@ router.put('/settings', (req, res) => {
       city || current.city,
       drug_license_no || current.drug_license_no,
       gstin || current.gstin,
-      default_language || current.default_language,
-      newPin
+      default_language || current.default_language
     );
     v3.applySettings(current, req.body || {});
 
@@ -941,10 +961,24 @@ router.get('/qr.svg', (req, res) => {
 
 router.post('/auth/unlock', (req, res) => {
   try {
-    res.json({ ok: true, ...v3.unlock(req.body || {}) });
+    const result = v3.unlock(req.body || {});
+    const session = access.issueSession();
+    res.setHeader('Set-Cookie', session.cookie);
+    res.locals.fullAccess = true;
+    res.json({ ok: true, ...result, token: session.token, expiresAt: session.expiresAt, data: getFullState() });
   } catch (err) {
     sendErr(res, err);
   }
+});
+
+router.get('/auth/session', (req, res) => {
+  res.json({ ok: true, admin: access.isAdmin(req) });
+});
+
+router.post('/auth/lock', (req, res) => {
+  access.clearSession(req);
+  res.setHeader('Set-Cookie', 'am_admin=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+  res.json({ ok: true, admin: false });
 });
 
 router.get('/auth/webauthn/options', (_req, res) => {
@@ -953,6 +987,7 @@ router.get('/auth/webauthn/options', (_req, res) => {
 
 router.post('/auth/webauthn/register', (req, res) => {
   try {
+    access.requireAdmin(req);
     res.json({ ok: true, ...v3.registerBiometric(req.body || {}), data: getFullState() });
   } catch (err) {
     sendErr(res, err);

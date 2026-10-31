@@ -42,7 +42,7 @@
     name: '', phone: '', doctor: '', schedule: false, interval: '30', customDays: 45
   };
 
-  try { owner = sessionStorage.getItem('am-owner') === '1'; } catch (_e) {}
+  owner = false;
 
   function t(key) {
     const pack = window.I18N || { en: {} };
@@ -1161,14 +1161,15 @@
     pinInput.onkeydown = (event) => { if (event.key === 'Enter') document.getElementById('pinGo').click(); };
     document.getElementById('pinGo').onclick = () => {
       const pin = document.getElementById('pinInput').value.trim();
-      if (pin === String(state.settings.owner_pin || '1234')) {
+      StoreEngine.unlock({ method: 'pin', pin: pin }).then(async function () {
         owner = true;
-        try { sessionStorage.setItem('am-owner', '1'); } catch (_e) {}
+        applyState(await StoreEngine.bootstrap());
         closeModal();
+        view = 'adm-pl';
         render();
-      } else {
+      }).catch(function () {
         document.getElementById('pinErr').textContent = t('wrongPin');
-      }
+      });
     };
   }
 
@@ -1240,7 +1241,7 @@
     owner = false;
     view = 'emp-counter';
     subview = 'pos';
-    try { sessionStorage.removeItem('am-owner'); } catch (_e) {}
+    if (StoreEngine.lock) StoreEngine.lock();
     render();
   }
   function armIdle() {
@@ -1288,13 +1289,17 @@
     lang: () => lang,
     setLang,
     applyState,
-    openChangePin
+    openChangePin,
+    returnText
   });
 
   async function boot() {
     document.getElementById('app').innerHTML = '<p class="muted">' + esc(t('loading')) + '</p>';
     paintChrome();
     try {
+      const session = await StoreEngine.adminSession();
+      owner = !!(session && session.admin);
+      if (owner) { view = 'adm-pl'; subview = 'margin'; }
       applyState(await StoreEngine.bootstrap());
       lang = state.settings.default_language === 'hi' ? 'hi' : 'en';
       render();
