@@ -1,130 +1,67 @@
-# Akshay Medicose — Ujjain (files live at the repository root)
+# Akshay Medicose — handoff
 
-The shop name is **Akshay Medicose (अक्षय मेडिकोज़, उज्जैन)**. Counter mode hides PTR until the owner PIN (`1234` by default). Sales can attach an optional customer receipt and WhatsApp bill. `/qr` builds a local SVG QR for the APK installer. Run `npm start` from this folder (port 3456).
+Pharmacy counter app for **Akshay Medicose, Freeganj, Ujjain**. Staff sell and add stock. The owner unlocks margins, salaries, and profit. English is the default; Hindi is a full translation.
 
-# Ujjain Medical Store App — Complete Handoff for VS Code & Codex (`AGENTS.md` / `HANDOFF.md`)
+## Stack
+- Node.js + Express (`server/index.js`, port **3456**)
+- SQLite via `better-sqlite3` (`data/ujjain_medstore.db`)
+- Vanilla JS UI in `public/` (no build step)
+- Offline mirror: `public/js/storeEngine.js` (used by the Android WebView APK)
+- APK shell: `scripts/build-apk.sh` or `scripts/repack-apk.py` → `UjjainMedStore-v1.0.apk` (versionName 3.0.0)
 
-## 1. Project Overview & Business Context
-- **Product:** Mobile-first (Android APK + PWA) and PC Web Medical Store Management System built for a pilot pharmacy/chemist in **Ujjain, Madhya Pradesh** (currently operating on paper files, no legacy ERP).
-- **Target Devices:**
-  1. **Primary:** Android smartphones used by the chemist/owner and counter staff (camera bill capture, rack onboarding, quick counter sales deduction, shelf audit).
-  2. **Secondary:** Occasional PC/laptop browser access for bulk invoice review, expiry return claims, and accounting.
-- **Current Status (`v1.0.0` MVP Complete & E2E Tested):**
-  - Full-stack Node.js + Express + `better-sqlite3` relational database (`server/`)
-  - Dual-Mode Hybrid Frontend (`public/`) that runs against the Express REST API when online and falls back seamlessly to a local relational store (`localStorage`) inside the standalone Android `.apk`.
-  - Production PostgreSQL / Supabase schema ready at `supabase/schema.sql`.
-  - Signed, installable Android APK (`UjjainMedStore-v1.0.apk`, package `com.ujjainmedstore.app`) + automated APK rebuild script (`scripts/build-apk.sh`).
-
----
-
-## 2. Directory & File Map
-```text
-medical-store-app/
-├── HANDOFF.md                      # This master handoff document
-├── AGENTS.md                       # Auto-loaded instructions for OpenAI Codex / VS Code agents
-├── README.md                       # Quick-start commands & overview
-├── package.json                    # Dependencies (express, better-sqlite3, multer, cors) & scripts
-├── UjjainMedStore-v1.0.apk         # Compiled & signed Android APK (v2/v3 signature)
-├── supabase/
-│   └── schema.sql                  # Production PostgreSQL / Supabase schema + pg_trgm indexes + views
-├── server/
-│   ├── index.js                    # Express entry point (default port 3456), static host & APK download route
-│   ├── db/
-│   │   ├── schema.sqlite.sql       # SQLite3 relational schema (mirrors supabase/schema.sql)
-│   │   └── database.js             # DB initialization + Ujjain wholesaler & batch seed data
-│   ├── routes/
-│   │   └── api.js                  # All REST API endpoints (/api/*)
-│   └── services/
-│       ├── fefoService.js          # First-Expiry-First-Out (FEFO) Strip + Loose Tablet deduction & Undo math
-│       └── ocrParserService.js     # Bill photo OCR (Tesseract + Indian wholesale invoice line-item parser)
-├── public/
-│   ├── index.html                  # Single-page responsive app shell (6 tabs + modals + EN/HI toggle)
-│   ├── manifest.json               # PWA manifest for Android Chrome install
-│   ├── sw.js                       # Offline service worker
-│   ├── css/
-│   │   └── styles.css              # Mobile-first + PC responsive styling
-│   └── js/
-│       ├── i18n.js                 # Bilingual dictionary (English + हिंदी / Hinglish)
-│       ├── storeEngine.js          # Dual-Mode data layer (REST API /api/* <-> Offline engine)
-│       └── app.js                  # UI state, event handlers, OCR review table, WhatsApp expiry claim generator
-├── scripts/
-│   ├── test-e2e.js                 # Automated E2E test suite (8 tests covering OCR, FEFO math, Undo, Audit)
-│   └── build-apk.sh                # Rebuilds & signs UjjainMedStore-v1.0.apk from public/ assets
-└── apk-build/                      # Android WebView wrapper sources (AndroidManifest.xml, smali, keystore)
-```
-
----
-
-## 3. How to Run & Verify in VS Code
-Open this folder in VS Code and run:
-
+## Commands
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Start the local server (runs at http://localhost:3456)
-npm start
-
-# 3. Run the automated E2E test suite (verifies FEFO strip/loose math, OCR, Undo, Stock Audit)
-npm test
+npm start          # http://localhost:3456
+npm test           # needs the server already running
+npm run build:apk  # rebuilds UjjainMedStore-v1.0.apk
 ```
 
----
+## Folder map
+- `server/routes/api.js` — HTTP API
+- `server/services/fefoService.js` — strip + loose sale math
+- `server/services/v3Service.js` — vouchers, expenses, expiry returns, P/L, scans
+- `server/services/accessControl.js` — admin session, PIN/pattern hashes, response redaction
+- `server/db/schema.sqlite.sql` + `database.js` — schema and Ujjain seed
+- `public/index.html`, `public/js/app.js`, `public/js/v3ui.js`, `public/css/styles.css`
+- `public/js/i18n.js` — English and Hindi
+- `scripts/test-e2e.js` — HTTP regression suite
 
-## 4. Core Business Rules & Domain Logic (Must Preserve When Editing)
+## Data model
+`store_settings`, `suppliers`, `medicines`, `inventory_batches` (strips + loose), `purchase_invoices`, `purchase_line_items`, `sales_entries`, `stock_audits`, `shortbook_items`, `customer_accounts`, `credit_transactions`, `refill_schedules`, `supplier_offers`, `expenses`, `vouchers`, `expiry_returns`, `ai_usage_monthly`, `admin_sessions`, `webauthn_challenges`.
 
-### A. Strip + Loose Tablet Inventory Math (`pack_size_units`)
-Every medicine has `pack_size_units` (e.g., `15` tablets per strip, `10` tablets per strip, `1` for syrup bottles/vials).
-Every batch in `inventory_batches` tracks two separate integer columns:
-- `strips_count` (Full sealed strips on shelf)
-- `loose_tablets_count` (Tablets remaining in an already-opened strip, always `< pack_size_units`)
-- **Total sellable units in a batch:** `(strips_count * pack_size_units) + loose_tablets_count`.
+Sellable units = `strips_count * pack_size_units + loose_tablets_count`. Sales deduct earliest expiry first (FEFO).
 
-### B. FEFO (First-Expiry-First-Out) Sales Deduction (`server/services/fefoService.js`)
-When a counter sale requests `S` strips and `L` loose tablets of a medicine:
-1. Convert request to total tablets needed: `totalRequestedUnits = (S * pack_size_units) + L`.
-2. Query active batches for that `medicine_id` where `(strips_count * pack_size_units + loose_tablets_count) > 0` and `expiry_date > CURRENT_DATE`, ordered by **`expiry_date ASC, id ASC`** (earliest expiry first).
-3. Deduct from the earliest expiring batch(es). If loose tablets are requested and `loose_tablets_count` is insufficient, automatically "break open" 1 sealed strip (`strips_count -= 1`, `loose_tablets_count += pack_size_units`) and deduct the loose tablets.
-4. Record the exact per-batch deduction breakdown inside `sales_entries.deduction_log_json` so **1-Tap Undo (`/api/sales/:id/undo`)** restores the exact strips and loose tablets back to their original batches.
+## Roles
+- **Employee (default):** counter, stock, expiry returns, help. API responses omit PIN, pattern, purchase rate (PTR), margin, COGS, P/L, and salaries.
+- **Admin:** `POST /api/auth/unlock` with PIN `1234` or pattern `0-3-6-7-8` returns a bearer token and an httpOnly `am_admin` cookie. Send `Authorization: Bearer <token>` on admin calls. Session length follows `admin_lock_minutes` (default 15).
+- PIN and pattern are stored as scrypt hashes and are never returned.
+- Biometric unlock requires a stored SPKI public key plus a one-time WebAuthn challenge and a valid signature. A credential id alone is rejected. If the device has no authenticator, the UI falls back to PIN.
+- Admin-only routes (`/api/reports/pl`, `/api/reports/seasonality`, `/api/expenses`) return **403** without a session.
 
-### C. Configurable Near-Expiry Return Window (Default: `60` Days)
-- Stored in `store_settings.expiry_alert_days` (default `60`, adjustable in UI from `15` to `180` days).
-- Batches expiring within `expiry_alert_days` are grouped by their supplying wholesaler (`Mahakal Pharma Agency`, `Malwa Medico Traders`, `Shipra Drug House`, etc.) so the chemist can generate a **1-Tap WhatsApp Return / Credit Note Claim** showing Batch No, Expiry Date, Invoice Ref, Qty, and total PTR return value.
+## API (high level)
+`GET /api/bootstrap` loads the shop. `POST /api/sales` is FEFO. `POST /api/sales/:id/undo` restores that sale. `POST /api/vouchers` saves a draft without touching stock; `POST /api/vouchers/:id/finalize` commits; `POST /api/vouchers/:id/cancel` drops a draft. Expiry slips move **PENDING → SENT → ADJUSTED** only. `GET /api/reports/pl?range=1d|1w|1m` is owner profit. `POST /api/ai/scan` counts a call only after a successful Gemini response. `POST /api/demo/clear-zero` and `POST /api/reset-demo` reset demo data.
 
-### D. Purchase Bill Photo + Smart OCR (`server/services/ocrParserService.js`)
-- Supports snapping a photo from an Android camera or uploading an image (`POST /api/ocr/parse` via `multer`).
-- Extracts Supplier Name, GSTIN, Invoice Number, Invoice Date, and line items (`brand_name`, `salt_composition`, `pack_size_label`, `pack_size_units`, `rack_location`, `batch_number`, `expiry_date`, `strips_qty`, `free_strips_qty`, `ptr_per_strip`, `mrp_per_strip`, `gst_percent`).
-- Renders an editable review table before committing (`POST /api/invoices`), which upserts the supplier, upserts the medicine master, creates the invoice header, and increments/creates the `inventory_batches` rows.
+## Env
+- `PORT` — default 3456
+- `GEMINI_API_KEY` — if set, bill/strip scans call Gemini 2.5 Flash. If unset, a deterministic parser is used and the monthly counter does not increase. A failed Gemini call does not increase it either. Hard stop is 300 successful calls per calendar month (HTTP 429).
 
-### E. Quick Rack Onboarding (`POST /api/onboarding/quick-rack`)
-- Because the Ujjain medical store is transitioning from paper files, staff can pick a shelf/rack (`Rack A-1`, `Rack B-2`, `Cold Storage`) and directly punch in existing shelf stock (Brand, Salt, Batch, Expiry, Strips, Loose Tablets, MRP, PTR) without needing old paper purchase bills.
+## Conventions
+- Keep employee and admin copy in `i18n.js` (plain English, plain Hindi).
+- Do not put purchase rate in employee DOM. The server must also omit it.
+- Preserve FEFO strip/loose math and the existing `/api` paths.
+- Do not add end-to-end encryption; it is deferred.
 
----
+## Known gaps
+- WebAuthn attestation (that the key was born inside a real secure element) is not checked. The signature over the server challenge is checked.
+- Multi-month seasonality rows are a sales ledger. They do not reduce current shelf counts.
+- Offline APK storage hashes the PIN and pattern. Other owner figures are hidden from employee API results, not encrypted at rest.
 
-## 5. REST API Reference (`server/routes/api.js`)
-| Method & Endpoint | Purpose |
-| :--- | :--- |
-| `GET /api/bootstrap?expiryDays=60` | Returns store settings, KPI summary,suppliers, medicines with nested batches, expiring batches, low-stock shortbook, invoices, recent sales, and audits |
-| `POST /api/settings` | Updates `expiry_alert_days` (e.g. `60`), store name, GSTIN, or language preference |
-| `POST /api/ocr/parse` | Accepts `multipart/form-data` (`billPhoto`) or `{ templateKey, rawText }` and returns parsed invoice JSON |
-| `POST /api/invoices` | Saves purchase invoice + line items and updates/creates `inventory_batches` |
-| `POST /api/onboarding/quick-rack` | Directly adds/updates a shelf batch during paper-to-digital rack onboarding |
-| `GET /api/substitutes?medicineId=X` | Finds all in-stock alternative brands sharing the same `salt_composition` |
-| `POST /api/sales` | Executes FEFO deduction for `{ medicine_id, sold_strips, sold_loose_tablets, customer_name }` |
-| `POST /api/sales/:id/undo` | Reverses a sale and restores exact batch strip + loose counts |
-| `POST /api/audits` | Logs physical vs. system stock discrepancy and reconciles `inventory_batches` |
-| `POST /api/reset-demo` | Resets SQLite database back to clean Ujjain seed state |
-
----
-
-## 6. Next Phase Tasks for Codex (Post-Wednesday Store Visit)
-When prompting **Codex in VS Code**, you can paste any of these tasks directly:
-
-1. **Upgrade OCR to Gemini 2.5 Flash / OpenAI Vision (`server/services/ocrParserService.js`):**
-   > *"In `server/services/ocrParserService.js`, add a Vision LLM provider using `GEMINI_API_KEY` or `OPENAI_API_KEY` that takes the uploaded `billPhoto` buffer from `/api/ocr/parse` and returns the exact JSON schema expected by the invoice review table (`supplier_name`, `supplier_gstin`, `invoice_number`, `invoice_date`, `items[]`), keeping Tesseract/heuristic parsing as the offline fallback."*
-2. **Barcode / QR Scanner for Strips:**
-   > *"Add `html5-qrcode` camera barcode scanning to the Counter Sales and Quick Rack Onboarding tabs in `public/js/app.js` and link `barcode` column in `medicines`/`inventory_batches`."*
-3. **CA / GST Monthly Purchase Register Export (Excel/CSV):**
-   > *"Add `GET /api/reports/gst-purchase-csv?month=YYYY-MM` in `server/routes/api.js` and an Export CSV button in the Bill OCR / Invoices tab so the chemist can send monthly GST input credit data to their CA."*
-4. **Supabase Cloud Sync:**
-   > *"Connect `server/db/database.js` or a sync worker to Supabase using `supabase/schema.sql` so multiple Android phones at the medical store sync inventory in real time."*
+## Starter prompt
+```text
+You are working on Akshay Medicose (Freeganj, Ujjain) in this repo. Read HANDOFF.md first.
+Stack: Express + SQLite in server/, vanilla JS in public/, offline mirror public/js/storeEngine.js, tests in scripts/test-e2e.js.
+Employee responses must never include PIN, pattern, PTR, margin, COGS, P/L, or salaries. Admin routes need the bearer token from POST /api/auth/unlock.
+Keep FEFO strip/loose math. Default language is English with a full Hindi dictionary. Do not add E2E encryption.
+Run the server (npm start) and npm test before you finish.
+```

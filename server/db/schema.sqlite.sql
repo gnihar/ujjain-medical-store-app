@@ -10,6 +10,11 @@ CREATE TABLE IF NOT EXISTS store_settings (
     expiry_alert_days INTEGER NOT NULL DEFAULT 60,
     default_language TEXT NOT NULL DEFAULT 'en',
     owner_pin TEXT NOT NULL DEFAULT '1234',
+    admin_pattern TEXT NOT NULL DEFAULT '0-3-6-7-8',
+    biometric_credential_id TEXT DEFAULT 'bio-demo-akshay-1',
+    biometric_enabled INTEGER NOT NULL DEFAULT 1,
+    tutorial_completed INTEGER NOT NULL DEFAULT 0,
+    admin_lock_minutes INTEGER NOT NULL DEFAULT 15,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -96,6 +101,12 @@ CREATE TABLE IF NOT EXISTS sales_entries (
     new_strips INTEGER NOT NULL DEFAULT 0,
     new_loose_tablets INTEGER NOT NULL DEFAULT 0,
     billed_amount REAL NOT NULL DEFAULT 0,
+    ptr_per_strip REAL NOT NULL DEFAULT 0,
+    cogs_amount REAL NOT NULL DEFAULT 0,
+    margin_amount REAL NOT NULL DEFAULT 0,
+    payment_mode TEXT NOT NULL DEFAULT 'CASH',
+    customer_id TEXT,
+    voucher_id TEXT,
     patient_name TEXT,
     customer_phone TEXT,
     doctor_name TEXT,
@@ -229,3 +240,75 @@ CREATE TABLE IF NOT EXISTS supplier_offers (
 CREATE INDEX IF NOT EXISTS idx_offers_salt ON supplier_offers (salt_composition);
 CREATE INDEX IF NOT EXISTS idx_offers_brand ON supplier_offers (brand_name);
 CREATE INDEX IF NOT EXISTS idx_offers_supplier ON supplier_offers (supplier_id);
+
+CREATE TABLE IF NOT EXISTS expenses (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL DEFAULT 'OTHER',
+    title TEXT NOT NULL DEFAULT '',
+    employee_name TEXT DEFAULT '',
+    amount REAL NOT NULL DEFAULT 0,
+    expense_date TEXT NOT NULL,
+    payment_mode TEXT NOT NULL DEFAULT 'CASH',
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (expense_date);
+CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses (category);
+
+CREATE TABLE IF NOT EXISTS vouchers (
+    id TEXT PRIMARY KEY,
+    voucher_number TEXT NOT NULL,
+    voucher_type TEXT NOT NULL DEFAULT 'SALE',
+    status TEXT NOT NULL DEFAULT 'DRAFT',
+    customer_or_supplier TEXT DEFAULT '',
+    customer_phone TEXT DEFAULT '',
+    doctor_name TEXT DEFAULT '',
+    items_json TEXT NOT NULL DEFAULT '[]',
+    total_amount REAL NOT NULL DEFAULT 0,
+    estimated_margin REAL NOT NULL DEFAULT 0,
+    payment_mode TEXT NOT NULL DEFAULT 'CASH',
+    schedule_refill INTEGER NOT NULL DEFAULT 0,
+    refill_interval_days INTEGER NOT NULL DEFAULT 30,
+    created_by_role TEXT NOT NULL DEFAULT 'EMPLOYEE',
+    note TEXT DEFAULT '',
+    sale_ids_json TEXT DEFAULT '[]',
+    invoice_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finalized_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_vouchers_status ON vouchers (status, created_at);
+
+CREATE TABLE IF NOT EXISTS expiry_returns (
+    id TEXT PRIMARY KEY,
+    return_slip_no TEXT NOT NULL,
+    batch_id TEXT,
+    medicine_id TEXT,
+    brand_name TEXT NOT NULL,
+    batch_number TEXT NOT NULL,
+    expiry_date TEXT,
+    rack_location TEXT,
+    supplier_id TEXT,
+    supplier_name TEXT NOT NULL,
+    supplier_phone TEXT DEFAULT '',
+    strips_returned INTEGER NOT NULL DEFAULT 0,
+    loose_returned INTEGER NOT NULL DEFAULT 0,
+    ptr_per_strip REAL NOT NULL DEFAULT 0,
+    ptr_value REAL NOT NULL DEFAULT 0,
+    return_reason TEXT NOT NULL DEFAULT 'Near Expiry (<=60d)',
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    credit_note_no TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_expiry_returns_status ON expiry_returns (status);
+
+CREATE TABLE IF NOT EXISTS ai_usage_monthly (
+    year_month TEXT PRIMARY KEY,
+    calls_used INTEGER NOT NULL DEFAULT 0,
+    monthly_limit INTEGER NOT NULL DEFAULT 300,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

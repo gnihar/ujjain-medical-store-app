@@ -99,40 +99,46 @@ def ensure_signer():
 
 
 def bump_manifest(data):
-    """Keep the bundled binary manifest at versionCode 3 / versionName 2.1.0."""
-    if '2.0.0'.encode('utf-16le') in data:
-        data = data.replace('2.0.0'.encode('utf-16le'), '2.1.0'.encode('utf-16le'), 1)
-    # versionCode is the INT_DEC attribute immediately after the versionCode name.
-    # The manifest start element stores it as type 0x10 and value 2.
-    needle = struct.pack('<IIIHBBI', 0, 0, 0xFFFFFFFF, 8, 0, 0x10, 2)
-    # Locate via the parsed attribute instead of a brittle needle when possible.
-    try:
-        import io
-        # Walk chunks copied from the known AXML layout used by this shell.
-        pos = 8
-        stype, hsize, csize = struct.unpack_from('<HHI', data, pos)
-        if stype == 1:
-            pos = pos + csize
-        while pos + 8 <= len(data):
-            ctype, hsz, csz = struct.unpack_from('<HHI', data, pos)
-            if ctype == 0x0102 and csz >= hsz + 20:
-                acount = struct.unpack_from('<H', data, pos + 8 + 16 + 4)[0]
-                # attrCount sits after ns, name (8 bytes) + attrStart, attrSize (4) = offset 28 from node start? 
-                # node: type/hsize/csize (8) + line, comment, ns, name (16) + attrStart, attrSize, attrCount
-                attr_count, = struct.unpack_from('<H', data, pos + 28)
-                attr_size, = struct.unpack_from('<H', data, pos + 26)
-                ap = pos + hsz
-                for _i in range(attr_count):
-                    ans, aname, raw, vsize, res0, typ, val = struct.unpack_from('<IIIHBBI', data, ap)
-                    if typ == 0x10 and val == 2 and aname == 0:
-                        data = data[:ap + 16] + struct.pack('<I', 3) + data[ap + 20:]
-                        return data
-                    ap += attr_size or 20
-            if csz < 8:
-                break
-            pos += csz
-    except Exception:
-        pass
+    """Set the bundled binary manifest to versionCode 4 / versionName 3.0.0."""
+    old_name = '2.1.0'.encode('utf-16le')
+    new_name = '3.0.0'.encode('utf-16le')
+    if old_name in data:
+        data = data.replace(old_name, new_name, 1)
+    elif new_name not in data:
+        raise SystemExit('AndroidManifest is missing versionName 2.1.0 or 3.0.0')
+
+    string_count, = struct.unpack_from('<I', data, 16)
+    strings_start, = struct.unpack_from('<I', data, 28)
+    offsets = struct.unpack_from('<' + 'I' * string_count, data, 36)
+    base = 8 + strings_start
+    strings = []
+    for off in offsets:
+        p = base + off
+        n, = struct.unpack_from('<H', data, p)
+        strings.append(data[p + 2:p + 2 + n * 2].decode('utf-16le', 'replace'))
+
+    pos = 8
+    stype, _hsize, csize = struct.unpack_from('<HHI', data, pos)
+    if stype == 1:
+        pos = pos + csize
+    while pos + 8 <= len(data):
+        ctype, hsz, csz = struct.unpack_from('<HHI', data, pos)
+        if ctype == 0x0102 and csz >= hsz + 20:
+            attr_count, = struct.unpack_from('<H', data, pos + 28)
+            attr_size, = struct.unpack_from('<H', data, pos + 26)
+            ap = pos + hsz
+            for _i in range(attr_count):
+                _ans, aname, _raw, _vsize, _res0, typ, val = struct.unpack_from('<IIIHBBI', data, ap)
+                label = strings[aname] if aname < len(strings) else ''
+                if label == 'versionCode' and typ == 0x10 and val != 4:
+                    data = data[:ap + 16] + struct.pack('<I', 4) + data[ap + 20:]
+                    return data
+                ap += attr_size or 20
+        if csz < 8:
+            break
+        pos += csz
+    if '3.0.0'.encode('utf-16le') not in data:
+        raise SystemExit('Failed to set versionName 3.0.0')
     return data
 
 

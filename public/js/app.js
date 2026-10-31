@@ -1,20 +1,25 @@
 (function () {
-  const NAV = [
-    ['dashboard', 'navDashboard'],
-    ['bills', 'navBills'],
-    ['inventory', 'navInventory'],
-    ['shortbook', 'navShortbook'],
-    ['schemes', 'navSchemes'],
-    ['counter', 'navCounter'],
-    ['credit', 'navCredit'],
-    ['refills', 'navRefills'],
-    ['audit', 'navAudit']
+  const EMP_NAV = [
+    ['emp-counter', 'tabEmpCounter'],
+    ['emp-stock', 'tabEmpStock'],
+    ['emp-expiry', 'tabEmpExpiry'],
+    ['emp-help', 'tabEmpHelp']
   ];
+  const ADM_NAV = [
+    ['adm-pl', 'tabAdmPl'],
+    ['adm-expenses', 'tabAdmExpenses'],
+    ['adm-ops', 'tabAdmOps'],
+    ['adm-settings', 'tabAdmSettings']
+  ];
+  const SUB_DEFAULT = { 'emp-counter': 'pos', 'emp-stock': 'search', 'adm-pl': 'margin', 'adm-ops': 'counter' };
   const RAW_APK = 'https://github.com/gnihar/ujjain-medical-store-app/raw/main/UjjainMedStore-v1.0.apk';
   const RELEASE_APK = 'https://github.com/gnihar/ujjain-medical-store-app/releases/latest/download/UjjainMedStore-v1.0.apk';
 
   let state = null;
-  let view = 'dashboard';
+  let view = 'emp-counter';
+  let subview = 'pos';
+  let v3api = null;
+  let idleTimer = null;
   let lang = 'en';
   let owner = false;
   let billQ = '';
@@ -37,7 +42,7 @@
     name: '', phone: '', doctor: '', schedule: false, interval: '30', customDays: 45
   };
 
-  try { owner = sessionStorage.getItem('am-owner') === '1'; } catch (_e) {}
+  owner = false;
 
   function t(key) {
     const pack = window.I18N || { en: {} };
@@ -145,7 +150,6 @@
     document.documentElement.lang = lang === 'hi' ? 'hi' : 'en';
     document.getElementById('locBadge').textContent = t('location');
     const ownerBtn = document.getElementById('ownerBtn');
-    ownerBtn.textContent = (owner ? t('ownerMode') : t('counterMode')) + (owner ? ' \u{1F513}' : ' \u{1F512}');
     let tools = document.getElementById('ownerTools');
     if (!tools) {
       tools = document.createElement('span');
@@ -154,22 +158,34 @@
       tools.style.gap = '8px';
       document.querySelector('.top-actions').insertBefore(tools, ownerBtn);
     }
-    tools.innerHTML = owner
-      ? '<button type="button" class="pill-btn" id="changePin">' + esc(t('changePin')) + '</button><button type="button" class="pill-btn" id="resetDemo">' + esc(t('resetDemo')) + '</button>'
-      : '';
-    const change = document.getElementById('changePin');
-    if (change) change.onclick = openChangePin;
-    const reset = document.getElementById('resetDemo');
-    if (reset) reset.onclick = () => {
-      if (!window.confirm(t('resetConfirm'))) return;
-      run(() => StoreEngine.resetDemo(), t('saved'));
-    };
+    tools.innerHTML = '';
     document.getElementById('apkBtn').textContent = t('getApp');
+    const help = document.getElementById('helpBtn');
+    if (help) help.textContent = '?';
     document.getElementById('langEn').classList.toggle('on', lang === 'en');
     document.getElementById('langHi').classList.toggle('on', lang === 'hi');
-    document.getElementById('modnav').innerHTML = NAV.map(([id, key]) =>
-      '<button type="button" data-view="' + id + '" class="' + (view === id ? 'on' : '') + '">' + esc(t(key)) + '</button>'
-    ).join('');
+    ownerBtn.textContent = (owner ? t('admModeBadge') : t('empModeBadge'));
+    const expCount = state && state.expiringBatches ? state.expiringBatches.length : 0;
+    const drafts = state && state.vouchers ? state.vouchers.filter(v => v.status === 'DRAFT').length : 0;
+    const nav = owner ? ADM_NAV : EMP_NAV;
+    if (!nav.some(([id]) => id === view)) view = nav[0][0];
+    document.getElementById('modnav').innerHTML = nav.map(([id, key]) => {
+      let badge = '';
+      if (id === 'emp-expiry' && expCount) badge = ' <span class="badge">' + expCount + '</span>';
+      if (id === 'emp-counter' && drafts) badge = ' <span class="badge">' + drafts + '</span>';
+      return '<button type="button" data-view="' + id + '" class="' + (view === id ? 'on' : '') + '">' + esc(t(key)) + badge + '</button>';
+    }).join('');
+    let timer = document.getElementById('lockTimer');
+    if (owner) {
+      if (!timer) {
+        timer = document.createElement('span');
+        timer.id = 'lockTimer';
+        timer.className = 'pill info';
+        ownerBtn.before(timer);
+      }
+      const mins = (state && state.settings && state.settings.admin_lock_minutes) || 15;
+      timer.textContent = mins + 'm';
+    } else if (timer) timer.remove();
   }
 
   function stockOf(id) {
@@ -508,7 +524,7 @@
         '<button type="button" class="btn small danger" data-mark="' + esc(card.key) + '" data-status="CLEARED">' + esc(t('clearLines')) + '</button></div></header>' +
         card.items.map(item => '<label class="check" style="padding:6px 0;border-top:1px solid #f1f5f9"><input type="checkbox" data-sb="' + esc(item.id) + '" data-group="' + esc(card.key) + '">' +
           '<span style="flex:1"><b>' + esc(item.brand_name) + '</b> <span class="pill neutral">' + esc(item.source === 'AUTO' ? t('auto') : t('manual')) + '</span><div class="muted">' + esc(item.pack_label || '') +
-          (item.last_ptr != null ? ' · ' + esc(t('lastPtr')) + ' ' + inr(item.last_ptr) : '') +
+          (owner && item.last_ptr != null ? ' · <span class="owner-only">' + esc(t('lastPtr')) + ' ' + inr(item.last_ptr) + '</span>' : '') +
           (item.last_scheme ? ' · ' + esc(item.last_scheme) : '') + '</div></span>' +
           '<input data-sbqty="' + esc(item.id) + '" type="number" min="1" value="' + esc(shortQty[item.id] != null ? shortQty[item.id] : item.requested_strips) + '" style="width:72px"></label>'
         ).join('') + '</article>'
@@ -525,7 +541,7 @@
       '----------------------------------------',
       ...items.map((item, i) => {
         const qty = shortQty[item.id] != null ? shortQty[item.id] : item.requested_strips;
-        return (i + 1) + '. ' + item.brand_name + '\n   ' + t('pack') + ': ' + (item.pack_label || '—') + '\n   ' + t('qty') + ': ' + qty + ' ' + t('stripsUnit') + '\n   ' + t('lastPtr') + ': ' + (item.last_ptr != null ? inr(item.last_ptr) : '—') + (item.last_scheme ? '\n   ' + t('scheme') + ': ' + item.last_scheme : '');
+        return (i + 1) + '. ' + item.brand_name + '\n   ' + t('pack') + ': ' + (item.pack_label || '—') + '\n   ' + t('qty') + ': ' + qty + ' ' + t('stripsUnit') + (owner ? '\n   ' + t('lastPtr') + ': ' + (item.last_ptr != null ? inr(item.last_ptr) : '—') : '') + (item.last_scheme ? '\n   ' + t('scheme') + ': ' + item.last_scheme : '');
       }),
       '----------------------------------------'
     ];
@@ -560,7 +576,7 @@
       '<label class="check"><input id="posSchedule" type="checkbox"' + (pos.schedule ? ' checked' : '') + '> ' + esc(t('schedule')) + '</label>' +
       (pos.schedule ? '<label class="field"><span>' + esc(t('interval')) + '</span><select id="posInterval"><option value="30"' + (pos.interval === '30' ? ' selected' : '') + '>' + esc(t('days30')) + '</option><option value="15"' + (pos.interval === '15' ? ' selected' : '') + '>' + esc(t('days15')) + '</option><option value="custom"' + (pos.interval === 'custom' ? ' selected' : '') + '>' + esc(t('custom')) + '</option></select></label>' +
         (pos.interval === 'custom' ? '<label class="field" style="width:90px"><span>' + esc(t('days')) + '</span><input id="posCustom" type="number" min="1" value="' + esc(pos.customDays) + '"></label>' : '') : '') +
-      '</div><button type="button" class="btn primary" id="posCharge">' + esc(t('charge')) + '</button></section>' +
+      '</div><div class="actions split-cta"><button type="button" class="btn" id="btnSaveDraftVoucher">' + esc(t('saveDraftVoucher')) + '</button><button type="button" class="btn primary" id="btnFinalizeNow">' + esc(t('finalizeVoucher')) + '</button></div></section>' +
       '<section class="panel"><h2>' + esc(t('recent')) + '</h2>' + recentSales() + '</section></div>';
   }
 
@@ -728,11 +744,14 @@
   function render() {
     paintChrome();
     const root = document.getElementById('app');
-    const body = {
-      dashboard, bills, inventory, shortbook, schemes, counter, credit, refills, audit
-    }[view] || dashboard;
-    root.innerHTML = body();
+    const legacy = { dashboard, bills, inventory, shortbook, schemes, counter, credit, refills, audit };
+    const builders = v3api ? Object.assign(legacy, v3api.views) : legacy;
+    const draw = builders[view] || builders['emp-counter'] || dashboard;
+    root.innerHTML = draw();
+    if (!owner) root.querySelectorAll('.owner-only').forEach(node => node.remove());
     bind();
+    if (v3api) v3api.bind();
+    armIdle();
   }
 
   function bind() {
@@ -896,7 +915,8 @@
     if (interval) interval.onchange = () => { pos.interval = interval.value; render(); };
     const custom = document.getElementById('posCustom');
     if (custom) custom.oninput = () => { pos.customDays = parseInt(custom.value, 10) || 30; };
-    document.getElementById('posCharge').onclick = () => {
+    const charge = document.getElementById('btnFinalizeNow') || document.getElementById('posCharge');
+    if (charge) charge.onclick = () => {
       const med = findMed(pos.medicineId) || ((pos.q.trim().length >= 3) ? (state.medicines || []).find(m => m.brand_name.toLowerCase().includes(pos.q.trim().toLowerCase())) : null);
       if (!med) return toast(t('noMatch'));
       if (!pos.strips && !pos.loose) return toast(t('needQty'));
@@ -1141,14 +1161,15 @@
     pinInput.onkeydown = (event) => { if (event.key === 'Enter') document.getElementById('pinGo').click(); };
     document.getElementById('pinGo').onclick = () => {
       const pin = document.getElementById('pinInput').value.trim();
-      if (pin === String(state.settings.owner_pin || '1234')) {
+      StoreEngine.unlock({ method: 'pin', pin: pin }).then(async function () {
         owner = true;
-        try { sessionStorage.setItem('am-owner', '1'); } catch (_e) {}
+        applyState(await StoreEngine.bootstrap());
         closeModal();
+        view = 'adm-pl';
         render();
-      } else {
+      }).catch(function () {
         document.getElementById('pinErr').textContent = t('wrongPin');
-      }
+      });
     };
   }
 
@@ -1213,15 +1234,30 @@
     const btn = event.target.closest('[data-view]');
     if (!btn) return;
     view = btn.getAttribute('data-view');
+    subview = SUB_DEFAULT[view] || subview;
     render();
   });
+  function lockEmployee() {
+    owner = false;
+    view = 'emp-counter';
+    subview = 'pos';
+    if (StoreEngine.lock) StoreEngine.lock();
+    render();
+  }
+  function armIdle() {
+    clearTimeout(idleTimer);
+    if (!owner) return;
+    const mins = (state && state.settings && state.settings.admin_lock_minutes) || 15;
+    idleTimer = setTimeout(lockEmployee, mins * 60 * 1000);
+  }
+  ['pointerdown', 'keydown'].forEach(type => document.addEventListener(type, () => { if (owner) armIdle(); }));
   document.getElementById('ownerBtn').onclick = () => {
-    if (owner) {
-      owner = false;
-      try { sessionStorage.removeItem('am-owner'); } catch (_e) {}
-      render();
-    } else openPin();
+    if (owner) lockEmployee();
+    else if (v3api) v3api.openUnlock();
+    else openPin();
   };
+  const helpBtn = document.getElementById('helpBtn');
+  if (helpBtn) helpBtn.onclick = () => { if (v3api) v3api.startTutorial(); };
   document.getElementById('langEn').onclick = () => setLang('en');
   document.getElementById('langHi').onclick = () => setLang('hi');
   document.getElementById('apkBtn').onclick = openQr;
@@ -1232,10 +1268,38 @@
     StoreEngine.updateSettings({ default_language: next }).then(applyState).catch(() => {});
   }
 
+  function currentMed() {
+    return findMed(pos.medicineId) || ((pos.q.trim().length >= 3)
+      ? (state.medicines || []).find(m => m.brand_name.toLowerCase().includes(pos.q.trim().toLowerCase()))
+      : null);
+  }
+
+  v3api = window.AkshayV3({
+    t, esc, inr, toast, pretty, wa,
+    state: () => state,
+    owner: () => owner,
+    setOwner: (value) => { owner = value; },
+    view: () => view,
+    setView: (value) => { view = value; },
+    sub: () => subview,
+    setSub: (value) => { subview = value; },
+    render: () => render(),
+    run, openModal, closeModal, pos: () => pos, findMed, currentMed, fileToData,
+    counter, credit, refills, inventory, shortbook, bills, schemes, audit,
+    lang: () => lang,
+    setLang,
+    applyState,
+    openChangePin,
+    returnText
+  });
+
   async function boot() {
     document.getElementById('app').innerHTML = '<p class="muted">' + esc(t('loading')) + '</p>';
     paintChrome();
     try {
+      const session = await StoreEngine.adminSession();
+      owner = !!(session && session.admin);
+      if (owner) { view = 'adm-pl'; subview = 'margin'; }
       applyState(await StoreEngine.bootstrap());
       lang = state.settings.default_language === 'hi' ? 'hi' : 'en';
       render();

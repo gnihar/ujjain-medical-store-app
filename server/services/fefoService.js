@@ -73,7 +73,9 @@ function deductSaleFEFO({ medicineId, batchId, stripsSold = 0, looseTabletsSold 
     newLoose = remainingTotal % packSize;
   }
 
-  const billedAmount = Number(((requestedUnits / packSize) * targetBatch.mrp_per_strip).toFixed(2));
+    const billedAmount = Number(((requestedUnits / packSize) * targetBatch.mrp_per_strip).toFixed(2));
+  const cogsAmount = Number(((requestedUnits / packSize) * targetBatch.ptr_per_strip).toFixed(2));
+  const marginAmount = Number((billedAmount - cogsAmount).toFixed(2));
   const daysLeft = Math.ceil((new Date(targetBatch.expiry_date).getTime() - new Date('2026-10-27').getTime()) / 86400000);
 
   const noteParts = [`FEFO Batch ${targetBatch.batch_number} (${daysLeft}d to exp)`];
@@ -100,8 +102,9 @@ function deductSaleFEFO({ medicineId, batchId, stripsSold = 0, looseTabletsSold 
         id, batch_id, medicine_id, brand_name, batch_number, rack_location,
         pack_size_units, strips_sold, loose_tablets_sold, total_units_deducted,
         prev_strips, prev_loose_tablets, new_strips, new_loose_tablets,
-        billed_amount, patient_name, customer_phone, doctor_name, sale_note, is_cancelled, payment_mode, sold_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now', '+5 hours', '+30 minutes'))
+        billed_amount, ptr_per_strip, cogs_amount, margin_amount,
+        patient_name, customer_phone, doctor_name, sale_note, is_cancelled, payment_mode, sold_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now', '+5 hours', '+30 minutes'))
     `).run(
       saleId,
       targetBatch.id,
@@ -118,6 +121,9 @@ function deductSaleFEFO({ medicineId, batchId, stripsSold = 0, looseTabletsSold 
       newStrips,
       newLoose,
       billedAmount,
+      targetBatch.ptr_per_strip,
+      cogsAmount,
+      marginAmount,
       patientName || null,
       customerPhone || null,
       doctorName || null,

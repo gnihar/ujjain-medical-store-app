@@ -69,7 +69,7 @@ app.get(['/install', '/install/'], (_req, res) => {
 app.use(express.static(publicDir));
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', app: 'Akshay Medicose — Ujjain v2.1', time: new Date().toISOString() });
+  res.json({ status: 'ok', app: 'Akshay Medicose — Ujjain v3.0', version: '3.0.0', time: new Date().toISOString() });
 });
 
 app.use((_req, res) => {
